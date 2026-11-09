@@ -27,23 +27,27 @@ object Runner {
         val assets = Assets.all.filter { it.id !in s.disabled }
         val todayUtc = LocalDate.now(ZoneOffset.UTC)
 
-        // 1) Wirtschaftskalender + Earnings (alle 3 h)
+        val finnKey = cleanKey(s.finnhubKey)
+        val claudeKey = cleanKey(s.claudeKey)
+
+        // 1) Wirtschaftskalender + Earnings (alle 3 h; nach Fehler Pause 1 h, damit der Feed nicht sperrt)
         var calendar = st.calendar
         var earnings = st.earnings
         var calTs = st.calendarTs
-        if (now - calTs > 3 * 3600 || calendar.isEmpty()) {
+        if (now - calTs > 3 * 3600) {
+            calTs = now
             try {
                 calendar = Sources.calendar()
-                calTs = now
             } catch (e: Exception) {
-                errors += "Kalender: ${e.message}"
+                errors += "Kalender: ${friendly(e)}"
+                calTs = now - 2 * 3600
             }
-            if (s.finnhubKey.isNotBlank()) {
+            if (finnKey.isNotBlank()) {
                 try {
                     val syms = Assets.all.mapNotNull { it.finnhub }.toSet()
-                    earnings = Sources.earnings(s.finnhubKey, todayUtc.toString(), todayUtc.plusDays(14).toString(), syms)
+                    earnings = Sources.earnings(finnKey, todayUtc.toString(), todayUtc.plusDays(14).toString(), syms)
                 } catch (e: Exception) {
-                    errors += "Earnings: ${e.message}"
+                    errors += "Earnings (Finnhub): ${friendly(e)}"
                 }
             }
         }
@@ -54,7 +58,7 @@ object Runner {
             try {
                 candles[a.id] = Sources.candles(a)
             } catch (e: Exception) {
-                errors += "${a.name}: ${e.message}"
+                errors += "${a.name}: ${friendly(e)}"
             }
         }
 
@@ -66,16 +70,18 @@ object Runner {
         var sentiments = st.sentiments
         var sentTs = st.sentimentTs
         var news = st.news
-        if (s.finnhubKey.isNotBlank() && now - sentTs > 30 * 60) {
+        if (finnKey.isNotBlank() && now - sentTs > 30 * 60) {
+            sentTs = now
+            var newsOk = false
             try {
                 val items = ArrayList<NewsItem>()
-                items += Sources.news(s.finnhubKey, "general")
-                items += Sources.news(s.finnhubKey, "forex")
+                items += Sources.news(finnKey, "general")
+                items += Sources.news(finnKey, "forex")
                 val from = todayUtc.minusDays(1).toString()
                 for (a in assets) {
                     val sym = a.finnhub ?: continue
                     try {
-                        items += Sources.companyNews(s.finnhubKey, sym, from, todayUtc.toString()).take(8)
+                        items += Sources.companyNews(finnKey, sym, from, todayUtc.toString()).take(8)
                     } catch (_: Exception) {
                     }
                 }
@@ -83,14 +89,19 @@ object Runner {
                     .distinctBy { it.headline }
                     .sortedByDescending { it.ts }
                     .take(150)
-                sentTs = now
-                if (s.claudeKey.isNotBlank() && news.isNotEmpty()) {
-                    val ev = calendar.filter { it.impact == "High" && it.ts > now - 6 * 3600 && it.ts < now + 24 * 3600 }
-                    sentiments = ClaudeApi.sentiment(s.claudeKey, assets, news, ev, now).associateBy { it.assetId }
-                }
+                newsOk = true
             } catch (e: Exception) {
-                errors += "News/KI: ${e.message}"
+                errors += "News (Finnhub): ${friendly(e)}"
                 sentTs = now - 20 * 60 // in ~10 min erneut versuchen
+            }
+            if (newsOk && claudeKey.isNotBlank() && news.isNotEmpty()) {
+                try {
+                    val ev = calendar.filter { it.impact == "High" && it.ts > now - 6 * 3600 && it.ts < now + 24 * 3600 }
+                    sentiments = ClaudeApi.sentiment(claudeKey, assets, news, ev, now).associateBy { it.assetId }
+                } catch (e: Exception) {
+                    errors += "KI (Claude): ${friendly(e)}"
+                    sentTs = now - 20 * 60
+                }
             }
         }
 

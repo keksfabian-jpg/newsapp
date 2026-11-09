@@ -8,6 +8,21 @@ import java.io.IOException
 object ClaudeApi {
     private const val MODEL = "claude-haiku-5-5"
 
+    private fun headers(key: String) = mapOf(
+        "x-api-key" to key,
+        "anthropic-version" to "2023-06-01",
+        "content-type" to "application/json",
+    )
+
+    /** Minimale Anfrage zum Prüfen des Keys. */
+    fun ping(key: String) {
+        val body = JSONObject()
+            .put("model", MODEL)
+            .put("max_tokens", 5)
+            .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", "Hi")))
+        Net.post("https://api.anthropic.com/v1/messages", body.toString(), headers(key))
+    }
+
     fun sentiment(
         key: String,
         assets: List<Asset>,
@@ -53,11 +68,7 @@ $sb
         val resp = Net.post(
             "https://api.anthropic.com/v1/messages",
             body.toString(),
-            mapOf(
-                "x-api-key" to key,
-                "anthropic-version" to "2023-06-01",
-                "content-type" to "application/json",
-            ),
+            headers(key),
         )
         val content = JSONObject(resp).getJSONArray("content")
         val text = StringBuilder()

@@ -87,6 +87,15 @@ import de.fabian.newstrader.CAT_SWEEP_ONLY
 import de.fabian.newstrader.CalEvent
 import de.fabian.newstrader.Earning
 import de.fabian.newstrader.Fmt
+import de.fabian.newstrader.KeyCheck
+import de.fabian.newstrader.cleanKey
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.text.input.VisualTransformation
 import de.fabian.newstrader.NewsItem
 import de.fabian.newstrader.RefreshWorker
 import de.fabian.newstrader.Sentiment
@@ -593,27 +602,72 @@ fun SettingsScreen(state: AppState) {
     var lev by remember(s.leverage) { mutableStateOf(trimNum(s.leverage)) }
     var minScore by remember(s.minScore) { mutableFloatStateOf(s.minScore.toFloat()) }
     var saved by remember { mutableStateOf(false) }
+    var showKeys by remember { mutableStateOf(false) }
+    var checking by remember { mutableStateOf(false) }
+    var checkResult by remember { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
+    val keyTrans = if (showKeys) VisualTransformation.None else PasswordVisualTransformation()
 
     Screen {
         item { Title("Setup") }
-        item { SectionTitle("API-Keys") }
         item {
-            OutlinedTextField(
-                value = finn, onValueChange = { finn = it; saved = false },
-                label = { Text("Finnhub API-Key") }, singleLine = true,
-                visualTransformation = PasswordVisualTransformation(),
-                modifier = Modifier.fillMaxWidth(), colors = fieldColors(),
-            )
-            Text("Kostenlos auf finnhub.io (News + Earnings).", color = C.Muted, fontSize = 12.sp)
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SectionTitle("API-Keys")
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = { showKeys = !showKeys }) {
+                    Text(if (showKeys) "Keys verbergen" else "Keys anzeigen", color = C.AccentSoft)
+                }
+            }
         }
         item {
             OutlinedTextField(
-                value = claude, onValueChange = { claude = it; saved = false },
-                label = { Text("Claude API-Key") }, singleLine = true,
-                visualTransformation = PasswordVisualTransformation(),
+                value = finn, onValueChange = { finn = it; saved = false; checkResult = "" },
+                label = { Text("Finnhub API-Key") }, singleLine = true,
+                visualTransformation = keyTrans,
+                modifier = Modifier.fillMaxWidth(), colors = fieldColors(),
+            )
+            Text("finnhub.io → Dashboard → Feld „API key“ (nicht „Webhook secret“).", color = C.Muted, fontSize = 12.sp)
+        }
+        item {
+            OutlinedTextField(
+                value = claude, onValueChange = { claude = it; saved = false; checkResult = "" },
+                label = { Text("Claude API-Key (sk-ant-…)") }, singleLine = true,
+                visualTransformation = keyTrans,
                 modifier = Modifier.fillMaxWidth(), colors = fieldColors(),
             )
             Text("console.anthropic.com → API Keys. Höchstens eine KI-Abfrage pro 30 min.", color = C.Muted, fontSize = 12.sp)
+        }
+        item {
+            OutlinedButton(
+                onClick = {
+                    checking = true
+                    checkResult = ""
+                    scope.launch {
+                        val r = withContext(Dispatchers.IO) {
+                            KeyCheck.finnhub(finn) + "\n" + KeyCheck.claude(claude)
+                        }
+                        checkResult = r
+                        checking = false
+                    }
+                },
+                enabled = !checking,
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(14.dp),
+            ) {
+                if (checking) {
+                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp, color = C.Accent)
+                } else {
+                    Text("Keys prüfen", color = C.AccentSoft)
+                }
+            }
+            if (checkResult.isNotBlank()) {
+                Text(
+                    checkResult,
+                    color = if (checkResult.contains("✗")) C.Amber else C.Green,
+                    fontSize = 13.sp, lineHeight = 18.sp,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+            }
         }
         item { SectionTitle("Paper-Trading") }
         item {
@@ -648,17 +702,28 @@ fun SettingsScreen(state: AppState) {
         item {
             Button(
                 onClick = {
+                    var f = cleanKey(finn)
+                    var c = cleanKey(claude)
+                    // vertauschte Keys automatisch korrigieren
+                    if (f.startsWith("sk-ant") && !c.startsWith("sk-ant")) {
+                        val t = f; f = c; c = t
+                        checkResult = "Keys waren vertauscht – automatisch korrigiert."
+                    }
+                    finn = f
+                    claude = c
                     Store.update {
+                        val keyChanged = f != it.settings.finnhubKey
                         it.copy(
                             settings = it.settings.copy(
-                                finnhubKey = finn.trim(),
-                                claudeKey = claude.trim(),
+                                finnhubKey = f,
+                                claudeKey = c,
                                 stake = stake.replace(',', '.').toDoubleOrNull() ?: it.settings.stake,
                                 leverage = lev.replace(',', '.').toDoubleOrNull() ?: it.settings.leverage,
                                 minScore = minScore.toDouble(),
                             ),
                             sentimentTs = 0,
-                            calendarTs = 0,
+                            calendarTs = if (keyChanged) 0 else it.calendarTs,
+                            lastError = "",
                         )
                     }
                     saved = true
