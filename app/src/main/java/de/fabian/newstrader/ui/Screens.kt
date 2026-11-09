@@ -88,6 +88,9 @@ import de.fabian.newstrader.CalEvent
 import de.fabian.newstrader.Earning
 import de.fabian.newstrader.Fmt
 import de.fabian.newstrader.KeyCheck
+import de.fabian.newstrader.Daytrade
+import de.fabian.newstrader.assetName
+import androidx.compose.material.icons.filled.PlayArrow
 import de.fabian.newstrader.cleanKey
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -119,6 +122,7 @@ fun AppRoot() {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     val tabs = listOf(
         "Signale" to Icons.Filled.Home,
+        "Daytrade" to Icons.Filled.PlayArrow,
         "Termine" to Icons.Filled.DateRange,
         "News" to Icons.Filled.Info,
         "Setup" to Icons.Filled.Settings,
@@ -148,8 +152,9 @@ fun AppRoot() {
         Box(Modifier.fillMaxSize().padding(pad)) {
             when (tab) {
                 0 -> SignalsScreen(state)
-                1 -> CalendarScreen(state)
-                2 -> NewsScreen(state)
+                1 -> DaytradeScreen(state)
+                2 -> CalendarScreen(state)
+                3 -> NewsScreen(state)
                 else -> SettingsScreen(state)
             }
         }
@@ -233,7 +238,7 @@ fun SignalsScreen(state: AppState) {
     val closedP = proposals.filter { !it.isOpen }.sortedBy { it.exitTs }
     val closedS = state.signals.filter { it.category == CAT_SWEEP_ONLY && !it.isOpen }
     val total = closedP.sumOf { it.pnlEur }
-    val list = if (showAll) state.signals else proposals
+    val list = if (showAll) state.signals.filter { it.category != Daytrade.CAT } else proposals
 
     Screen {
         item {
@@ -291,9 +296,9 @@ fun SignalsScreen(state: AppState) {
 }
 
 @Composable
-private fun PnlCard(total: Double, closed: List<Signal>) {
+private fun PnlCard(total: Double, closed: List<Signal>, title: String = "Paper-Ergebnis der Vorschläge") {
     CardBox {
-        Text("Paper-Ergebnis der Vorschläge", color = C.Muted, fontSize = 13.sp)
+        Text(title, color = C.Muted, fontSize = 13.sp)
         Text(
             Fmt.eur(total),
             color = if (total >= 0) C.Green else C.Red,
@@ -309,7 +314,7 @@ private fun PnlCard(total: Double, closed: List<Signal>) {
             l
         }
         if (pts.size < 2) {
-            Text("Die Kurve erscheint nach dem ersten abgeschlossenen Vorschlag.", color = C.Muted, fontSize = 13.sp)
+            Text("Die Kurve erscheint nach dem ersten abgeschlossenen Trade.", color = C.Muted, fontSize = 13.sp)
         } else {
             LineChart(pts, Modifier.fillMaxWidth().height(130.dp))
         }
@@ -353,15 +358,15 @@ private fun statusLabel(s: String) = when (s) {
     "TP" -> "TP erreicht"
     "SL" -> "SL erreicht"
     "ZEIT" -> "nach 24 h"
+    "EOD" -> "Handelsschluss"
     else -> s
 }
 
 @Composable
 private fun SignalCard(s: Signal) {
-    val a = Assets.byId(s.assetId)
     var open by remember { mutableStateOf(false) }
     val dirColor = if (s.dir == 1) C.Green else C.Red
-    val highlight = s.isOpen && s.category == CAT_PROPOSAL
+    val highlight = s.isOpen && (s.category == CAT_PROPOSAL || s.category == Daytrade.CAT)
     val shape = RoundedCornerShape(16.dp)
     Column(
         Modifier.fillMaxWidth().clip(shape).background(C.Card)
@@ -370,7 +375,7 @@ private fun SignalCard(s: Signal) {
             .padding(14.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(a?.name ?: s.assetId, color = C.Text, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+            Text(assetName(s.assetId), color = C.Text, fontSize = 17.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.width(8.dp))
             Chip(if (s.dir == 1) "LONG" else "SHORT", dirColor)
             if (s.category == CAT_SWEEP_ONLY) {
@@ -415,6 +420,67 @@ private fun Level(label: String, v: Double, color: Color, modifier: Modifier) {
     Column(modifier) {
         Text(label, color = C.Muted, fontSize = 11.sp)
         Text(Fmt.price(v), color = color, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+// ---------------------------------------------------------------- Daytrade
+
+@Composable
+fun DaytradeScreen(state: AppState) {
+    val now = nowSec()
+    val trades = state.signals.filter { it.category == Daytrade.CAT }
+    val closed = trades.filter { !it.isOpen }.sortedBy { it.exitTs }
+    val total = closed.sumOf { it.pnlEur }
+    val wins = closed.filter { it.pnlEur > 0 }
+    val losses = closed.filter { it.pnlEur <= 0 }
+    val avgWin = if (wins.isEmpty()) "–" else Fmt.eur(wins.sumOf { it.pnlEur } / wins.size)
+    val avgLoss = if (losses.isEmpty()) "–" else Fmt.eur(losses.sumOf { it.pnlEur } / losses.size)
+
+    Screen {
+        item { Title("Daytrades", "Opening Range Breakout · max. 1 Handelstag") { RefreshButton(state) } }
+        item { PnlCard(total, closed, "Paper-Ergebnis der Daytrades") }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                StatTile("Treffer", hitRate(closed), "${closed.size} abgeschl.", Modifier.weight(1f))
+                StatTile("Ø Gewinn", avgWin, "Ø Verlust $avgLoss", Modifier.weight(1.4f))
+                StatTile("Offen", "${trades.count { it.isOpen }}", "heute", Modifier.weight(1f))
+            }
+        }
+        item {
+            CardBox {
+                Text("Nächste Eröffnungen (deine Zeit)", color = C.Muted, fontSize = 13.sp)
+                Daytrade.nextOpens(now).forEach { (label, ts) ->
+                    Row(Modifier.padding(top = 4.dp)) {
+                        Text(label, color = C.Text, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                        Text(Fmt.dateTime(ts), color = C.AccentSoft, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+                Text(
+                    "Signale kommen 5–45 min nach der Eröffnung.",
+                    color = C.Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp),
+                )
+            }
+        }
+        item { SectionTitle("Trades") }
+        if (trades.isEmpty()) {
+            item { Text("Noch keine Daytrades. Der erste kommt nach der nächsten Eröffnung.", color = C.Muted, fontSize = 14.sp) }
+        }
+        items(trades, key = { it.id }) { SignalCard(it) }
+        item { SectionTitle("Strategie") }
+        item {
+            CardBox {
+                Text(
+                    "Opening Range Breakout (5 min), angelehnt an veröffentlichte Studien zum Nasdaq-ETF und zu „Stocks in Play“.\n\n" +
+                        "1. Erste 5-min-Kerze nach Börseneröffnung (DAX 9:00, USA 15:30 deutsche Zeit).\n" +
+                        "2. Grüne Kerze → Long, rote Kerze → Short, ohne Bewegung kein Trade.\n" +
+                        "3. Aktien nur, wenn das Volumen der ersten Kerze mind. 1,5× so hoch ist wie an den Vortagen – oder an Earnings-Tagen.\n" +
+                        "4. Stop am anderen Ende der ersten Kerze, Ziel 10R, sonst Ausstieg zum Handelsschluss.\n" +
+                        "5. Das News-Sentiment wird nur angezeigt (✓/✗), filtert aber nicht.\n\n" +
+                        "Erwartung: Trefferquote oft nur 20–35 %, dafür einzelne große Gewinner. Längere Verlustserien sind normal.",
+                    color = C.Text, fontSize = 13.sp, lineHeight = 19.sp,
+                )
+            }
+        }
     }
 }
 
@@ -698,6 +764,23 @@ fun SettingsScreen(state: AppState) {
                 steps = 6,
                 colors = SliderDefaults.colors(thumbColor = C.Accent, activeTrackColor = C.Accent, inactiveTrackColor = C.Line),
             )
+        }
+        item {
+            Row(
+                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(C.Card)
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text("Push für Daytrades", color = C.Text, fontSize = 15.sp)
+                    Text("Paper-Auswertung läuft immer mit", color = C.Muted, fontSize = 12.sp)
+                }
+                Switch(
+                    checked = s.daytradePush,
+                    onCheckedChange = { on -> Store.update { st -> st.copy(settings = st.settings.copy(daytradePush = on)) } },
+                    colors = SwitchDefaults.colors(checkedTrackColor = C.Accent, uncheckedTrackColor = C.Card2),
+                )
+            }
         }
         item {
             Button(

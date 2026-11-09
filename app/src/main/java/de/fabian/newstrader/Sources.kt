@@ -8,9 +8,11 @@ import java.time.OffsetDateTime
 /** Datenquellen: Yahoo (Kerzen), ForexFactory-Feed (Wirtschaftskalender), Finnhub (News, Earnings). */
 object Sources {
 
-    fun candles(a: Asset): List<Candle> {
-        val sym = URLEncoder.encode(a.yahoo, "UTF-8")
-        val txt = Net.get("https://query1.finance.yahoo.com/v8/finance/chart/$sym?interval=15m&range=5d")
+    fun candles(a: Asset): List<Candle> = candles(a.yahoo, "15m")
+
+    fun candles(yahoo: String, interval: String): List<Candle> {
+        val sym = URLEncoder.encode(yahoo, "UTF-8")
+        val txt = Net.get("https://query1.finance.yahoo.com/v8/finance/chart/$sym?interval=$interval&range=5d")
         val result = JSONObject(txt).getJSONObject("chart").optJSONArray("result") ?: return emptyList()
         val r = result.getJSONObject(0)
         val ts = r.optJSONArray("timestamp") ?: return emptyList()
@@ -19,10 +21,12 @@ object Sources {
         val h = q.getJSONArray("high")
         val l = q.getJSONArray("low")
         val c = q.getJSONArray("close")
+        val v = q.optJSONArray("volume")
         val out = ArrayList<Candle>(ts.length())
         for (i in 0 until ts.length()) {
             if (o.isNull(i) || h.isNull(i) || l.isNull(i) || c.isNull(i)) continue
-            out.add(Candle(ts.getLong(i), o.getDouble(i), h.getDouble(i), l.getDouble(i), c.getDouble(i)))
+            val vol = if (v == null || v.isNull(i)) 0.0 else v.optDouble(i, 0.0)
+            out.add(Candle(ts.getLong(i), o.getDouble(i), h.getDouble(i), l.getDouble(i), c.getDouble(i), vol))
         }
         return out
     }

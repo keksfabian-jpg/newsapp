@@ -32,6 +32,17 @@ class RefreshWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
             WorkManager.getInstance(ctx).enqueueUniquePeriodicWork("refresh", ExistingPeriodicWorkPolicy.KEEP, req)
         }
 
+        /** Einmaliger Lauf zu einem festen Zeitpunkt (eindeutiger Name je Zeitpunkt, keine Duplikate). */
+        fun scheduleAt(ctx: Context, targetSec: Long) {
+            val delay = targetSec - System.currentTimeMillis() / 1000
+            if (delay <= 0) return
+            val req = OneTimeWorkRequestBuilder<RefreshWorker>()
+                .setInitialDelay(delay, TimeUnit.SECONDS)
+                .setConstraints(net)
+                .build()
+            WorkManager.getInstance(ctx).enqueueUniqueWork("open-$targetSec", ExistingWorkPolicy.KEEP, req)
+        }
+
         fun runNow(ctx: Context) {
             val req = OneTimeWorkRequestBuilder<RefreshWorker>().setConstraints(net).build()
             WorkManager.getInstance(ctx).enqueueUniqueWork("refresh-now", ExistingWorkPolicy.KEEP, req)

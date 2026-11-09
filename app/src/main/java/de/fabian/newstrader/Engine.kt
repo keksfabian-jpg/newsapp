@@ -142,7 +142,7 @@ object Engine {
         return sig
     }
 
-    private fun close(sig: Signal, exit: Double, ts: Long, status: String, s: Settings): Signal {
+    fun close(sig: Signal, exit: Double, ts: Long, status: String, s: Settings): Signal {
         val pct = (exit - sig.entry) / sig.entry * sig.dir
         val pnl = max(s.stake * s.leverage * pct, -s.stake) - 2.0
         return sig.copy(status = status, exitPrice = exit, exitTs = ts, pct = pct, pnlEur = pnl)

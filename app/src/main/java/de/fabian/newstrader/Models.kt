@@ -51,7 +51,10 @@ object Assets {
     fun byId(id: String) = all.firstOrNull { it.id == id }
 }
 
-data class Candle(val ts: Long, val o: Double, val h: Double, val l: Double, val c: Double)
+data class Candle(val ts: Long, val o: Double, val h: Double, val l: Double, val c: Double, val v: Double = 0.0)
+
+/** Name eines Markts aus beiden Listen (Sweep-Assets und Daytrade-Assets). */
+fun assetName(id: String): String = Assets.byId(id)?.name ?: DayAssets.byId(id)?.name ?: id
 
 const val CAT_PROPOSAL = "VORSCHLAG"
 const val CAT_SWEEP_ONLY = "NUR_SWEEP"
@@ -156,10 +159,12 @@ data class Settings(
     val leverage: Double = 10.0,
     val minScore: Double = 0.3,
     val disabled: Set<String> = emptySet(),
+    val daytradePush: Boolean = true,
 ) {
     fun toJson(): JSONObject = JSONObject().put("finnhubKey", finnhubKey).put("claudeKey", claudeKey)
         .put("stake", stake).put("leverage", leverage).put("minScore", minScore)
         .put("disabled", JSONArray(disabled.toList()))
+        .put("daytradePush", daytradePush)
 
     companion object {
         fun fromJson(o: JSONObject) = Settings(
@@ -169,6 +174,7 @@ data class Settings(
             leverage = o.optDouble("leverage", 10.0),
             minScore = o.optDouble("minScore", 0.3),
             disabled = o.optJSONArray("disabled").strings().toSet(),
+            daytradePush = o.optBoolean("daytradePush", true),
         )
     }
 }

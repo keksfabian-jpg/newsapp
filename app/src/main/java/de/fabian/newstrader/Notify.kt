@@ -23,22 +23,22 @@ object Notify {
         nm.createNotificationChannel(NotificationChannel(CH_RESULT, "Ergebnisse", NotificationManager.IMPORTANCE_DEFAULT))
     }
 
-    fun signal(ctx: Context, s: Signal) {
-        val a = Assets.byId(s.assetId) ?: return
+    fun signal(ctx: Context, s: Signal, daytrade: Boolean = false) {
         val side = if (s.dir == 1) "LONG" else "SHORT"
-        val title = "$side ${a.name} @ ${Fmt.price(s.entry)}"
+        val prefix = if (daytrade) "Daytrade: " else ""
+        val title = "$prefix$side ${assetName(s.assetId)} @ ${Fmt.price(s.entry)}"
         val text = "SL ${Fmt.price(s.sl)} · TP ${Fmt.price(s.tp)}\n${s.reason}"
         show(ctx, CH_SIGNAL, s.id.hashCode(), title, text)
     }
 
     fun result(ctx: Context, s: Signal) {
-        val a = Assets.byId(s.assetId) ?: return
         val how = when (s.status) {
             "TP" -> "Take-Profit erreicht"
             "SL" -> "Stop-Loss erreicht"
+            "EOD" -> "zum Handelsschluss geschlossen"
             else -> "nach 24 h geschlossen"
         }
-        show(ctx, CH_RESULT, s.id.hashCode() + 1, "${a.name}: ${Fmt.eur(s.pnlEur)}", "$how (${Fmt.pct(s.pct)} im Basiswert)")
+        show(ctx, CH_RESULT, s.id.hashCode() + 1, "${assetName(s.assetId)}: ${Fmt.eur(s.pnlEur)}", "$how (${Fmt.pct(s.pct)} im Basiswert)")
     }
 
     @SuppressLint("MissingPermission")

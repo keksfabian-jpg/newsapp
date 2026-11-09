@@ -44,7 +44,7 @@ object Runner {
             }
             if (finnKey.isNotBlank()) {
                 try {
-                    val syms = Assets.all.mapNotNull { it.finnhub }.toSet()
+                    val syms = (Assets.all.mapNotNull { it.finnhub } + DayAssets.all.mapNotNull { it.finnhub }).toSet()
                     earnings = Sources.earnings(finnKey, todayUtc.toString(), todayUtc.plusDays(14).toString(), syms)
                 } catch (e: Exception) {
                     errors += "Earnings (Finnhub): ${friendly(e)}"
@@ -119,6 +119,11 @@ object Runner {
             created += sig
         }
 
+        // 6) Daytrades (Opening Range Breakout)
+        val day = Daytrade.step(all.filter { it.category == Daytrade.CAT }, now, s, sentiments, earnings, errors)
+        all.removeAll { it.category == Daytrade.CAT }
+        all += day.signals
+
         val finalNews = news
         val finalSent = sentiments
         val finalCal = calendar
@@ -141,5 +146,12 @@ object Runner {
 
         created.filter { it.category == CAT_PROPOSAL }.forEach { Notify.signal(ctx, it) }
         newlyClosed.filter { it.category == CAT_PROPOSAL }.forEach { Notify.result(ctx, it) }
+        if (s.daytradePush) {
+            day.created.forEach { Notify.signal(ctx, it, daytrade = true) }
+            day.closed.forEach { Notify.result(ctx, it) }
+        }
+
+        // gezielter Lauf kurz nach der nächsten Börseneröffnung
+        RefreshWorker.scheduleAt(ctx, Daytrade.nextRunTarget(now))
     }
 }
