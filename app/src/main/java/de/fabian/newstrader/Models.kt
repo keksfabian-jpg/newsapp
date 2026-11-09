@@ -58,6 +58,54 @@ fun assetName(id: String): String = Assets.byId(id)?.name ?: DayAssets.byId(id)?
 
 const val CAT_PROPOSAL = "VORSCHLAG"
 const val CAT_SWEEP_ONLY = "NUR_SWEEP"
+const val CAT_ORB = "ORB"
+const val CAT_IM = "IM"
+const val CAT_ON = "ON"
+const val CAT_SB = "SB"
+const val CAT_VWAP = "VWAP"
+const val CAT_NEWS = "NEWS"
+
+data class StratInfo(val code: String, val name: String, val desc: String)
+
+object Strategies {
+    val all = listOf(
+        StratInfo(
+            CAT_PROPOSAL, "Sweep + News",
+            "Asia-/Vortages-Range wird gesweept und zurückerobert, KI-Sentiment bestätigt die Richtung. Stop hinter dem Sweep, Ziel 2R, max. 24 h. (Reiter Signale)",
+        ),
+        StratInfo(
+            CAT_SWEEP_ONLY, "Nur Sweep (ICT)",
+            "Gleicher Liquidity Sweep wie oben, aber ohne News-Bestätigung. Zeigt, ob die News überhaupt etwas bringen.",
+        ),
+        StratInfo(
+            CAT_ORB, "Opening Range Breakout",
+            "Erste 5-min-Kerze nach Eröffnung (DAX 9:00, USA 15:30) gibt die Richtung vor. Aktien nur bei 1,5× Volumen oder Earnings. Stop am anderen Kerzenende, Ziel 10R, Exit zum Handelsschluss.",
+        ),
+        StratInfo(
+            CAT_IM, "Intraday-Momentum",
+            "S&P/Nasdaq: Bewegt sich der Markt vom Vortagesschluss bis 16:00 Uhr (dt.) um mind. 0,25 %, wird um 21:30 in diese Richtung gehandelt und um 22:00 geschlossen. Grund: Absicherungsflüsse vor Handelsschluss.",
+        ),
+        StratInfo(
+            CAT_ON, "Overnight-Effekt",
+            "S&P/Nasdaq Long kurz vor US-Schluss (ca. 22:00), Verkauf zur US-Eröffnung am nächsten Tag (15:30). Nur Mo–Do. Ein großer Teil der Aktienrendite entsteht über Nacht.",
+        ),
+        StratInfo(
+            CAT_SB, "ICT Silver Bullet",
+            "16–17 Uhr (dt.): Hoch/Tief der ersten 30 min wird gesweept, danach entsteht eine Fair Value Gap in Gegenrichtung → Einstieg. Stop hinter dem Sweep, Ziel 2R, Exit 22:00. Nasdaq, S&P, Gold.",
+        ),
+        StratInfo(
+            CAT_VWAP, "Orderflow-Näherung (VWAP)",
+            "Um 16:30 (dt.): Kurs klar über/unter dem VWAP seit Eröffnung UND Kaufdruck-Näherung aus dem Volumen in dieselbe Richtung → mit dem Trend handeln. Stop am VWAP, Ziel 2R, Exit 22:00. Echte Orderbuchdaten sind nicht frei verfügbar.",
+        ),
+        StratInfo(
+            CAT_NEWS, "News pur (KI)",
+            "Sobald die KI für einen Markt ein starkes Sentiment (≥ 0,6) meldet, wird sofort in diese Richtung gehandelt – ohne Chart-Bestätigung. Stop 1,5× ATR, Ziel 3× ATR, Exit nach 4 h.",
+        ),
+    )
+    val sweepCodes = setOf(CAT_PROPOSAL, CAT_SWEEP_ONLY)
+    val dayCodes = setOf(CAT_ORB, CAT_IM, CAT_ON, CAT_SB, CAT_VWAP, CAT_NEWS)
+    fun name(code: String) = all.firstOrNull { it.code == code }?.name ?: code
+}
 
 data class Signal(
     val id: String,
@@ -75,6 +123,8 @@ data class Signal(
     val exitTs: Long = 0,
     val pct: Double = 0.0,
     val pnlEur: Double = 0.0,
+    /** Geplanter Zeitausstieg (0 = Standard 24 h). */
+    val exitAt: Long = 0,
 ) {
     val isOpen get() = status == "OPEN"
 
@@ -83,7 +133,7 @@ data class Signal(
         .put("entry", entry).put("sl", sl).put("tp", tp)
         .put("category", category).put("reason", reason).put("tags", JSONArray(tags))
         .put("status", status).put("exitPrice", exitPrice).put("exitTs", exitTs)
-        .put("pct", pct).put("pnlEur", pnlEur)
+        .put("pct", pct).put("pnlEur", pnlEur).put("exitAt", exitAt)
 
     companion object {
         fun fromJson(o: JSONObject) = Signal(
@@ -102,6 +152,7 @@ data class Signal(
             exitTs = o.optLong("exitTs", 0),
             pct = o.optDouble("pct", 0.0),
             pnlEur = o.optDouble("pnlEur", 0.0),
+            exitAt = o.optLong("exitAt", 0),
         )
     }
 }

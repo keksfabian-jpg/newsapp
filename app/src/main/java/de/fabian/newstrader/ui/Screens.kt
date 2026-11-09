@@ -89,6 +89,10 @@ import de.fabian.newstrader.Earning
 import de.fabian.newstrader.Fmt
 import de.fabian.newstrader.KeyCheck
 import de.fabian.newstrader.Daytrade
+import de.fabian.newstrader.Export
+import de.fabian.newstrader.Strategies
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import de.fabian.newstrader.assetName
 import androidx.compose.material.icons.filled.PlayArrow
 import de.fabian.newstrader.cleanKey
@@ -122,7 +126,7 @@ fun AppRoot() {
     var tab by rememberSaveable { mutableIntStateOf(0) }
     val tabs = listOf(
         "Signale" to Icons.Filled.Home,
-        "Daytrade" to Icons.Filled.PlayArrow,
+        "Strategien" to Icons.Filled.PlayArrow,
         "Termine" to Icons.Filled.DateRange,
         "News" to Icons.Filled.Info,
         "Setup" to Icons.Filled.Settings,
@@ -238,7 +242,7 @@ fun SignalsScreen(state: AppState) {
     val closedP = proposals.filter { !it.isOpen }.sortedBy { it.exitTs }
     val closedS = state.signals.filter { it.category == CAT_SWEEP_ONLY && !it.isOpen }
     val total = closedP.sumOf { it.pnlEur }
-    val list = if (showAll) state.signals.filter { it.category != Daytrade.CAT } else proposals
+    val list = if (showAll) state.signals.filter { it.category in Strategies.sweepCodes } else proposals
 
     Screen {
         item {
@@ -358,7 +362,7 @@ private fun statusLabel(s: String) = when (s) {
     "TP" -> "TP erreicht"
     "SL" -> "SL erreicht"
     "ZEIT" -> "nach 24 h"
-    "EOD" -> "Handelsschluss"
+    "EOD" -> "Zeitausstieg"
     else -> s
 }
 
@@ -366,7 +370,7 @@ private fun statusLabel(s: String) = when (s) {
 private fun SignalCard(s: Signal) {
     var open by remember { mutableStateOf(false) }
     val dirColor = if (s.dir == 1) C.Green else C.Red
-    val highlight = s.isOpen && (s.category == CAT_PROPOSAL || s.category == Daytrade.CAT)
+    val highlight = s.isOpen && (s.category == CAT_PROPOSAL || s.category in Strategies.dayCodes)
     val shape = RoundedCornerShape(16.dp)
     Column(
         Modifier.fillMaxWidth().clip(shape).background(C.Card)
@@ -394,13 +398,21 @@ private fun SignalCard(s: Signal) {
                 )
             }
         }
-        val sub = Fmt.dateTime(s.ts) + if (!s.isOpen) " · ${statusLabel(s.status)} · ${Fmt.pct(s.pct)}" else ""
+        val strat = if (s.category in Strategies.dayCodes) "${Strategies.name(s.category)} · " else ""
+        val sub = strat + Fmt.dateTime(s.ts) + if (!s.isOpen) " · ${statusLabel(s.status)} · ${Fmt.pct(s.pct)}" else ""
         Text(sub, color = C.Muted, fontSize = 12.sp)
         Spacer(Modifier.height(10.dp))
         Row(Modifier.fillMaxWidth()) {
             Level("Einstieg", s.entry, C.Text, Modifier.weight(1f))
             Level("Stop-Loss", s.sl, C.Red, Modifier.weight(1f))
-            Level("Take-Profit", s.tp, C.Green, Modifier.weight(1f))
+            if (s.tp > 0) {
+                Level("Take-Profit", s.tp, C.Green, Modifier.weight(1f))
+            } else {
+                Column(Modifier.weight(1f)) {
+                    Text("Ausstieg", color = C.Muted, fontSize = 11.sp)
+                    Text(Fmt.time(s.exitAt), color = C.AccentSoft, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+                }
+            }
         }
         if (s.tags.isNotEmpty()) {
             Spacer(Modifier.height(8.dp))
@@ -427,23 +439,38 @@ private fun Level(label: String, v: Double, color: Color, modifier: Modifier) {
 
 @Composable
 fun DaytradeScreen(state: AppState) {
+    val ctx = LocalContext.current
     val now = nowSec()
-    val trades = state.signals.filter { it.category == Daytrade.CAT }
-    val closed = trades.filter { !it.isOpen }.sortedBy { it.exitTs }
-    val total = closed.sumOf { it.pnlEur }
-    val wins = closed.filter { it.pnlEur > 0 }
-    val losses = closed.filter { it.pnlEur <= 0 }
-    val avgWin = if (wins.isEmpty()) "–" else Fmt.eur(wins.sumOf { it.pnlEur } / wins.size)
-    val avgLoss = if (losses.isEmpty()) "–" else Fmt.eur(losses.sumOf { it.pnlEur } / losses.size)
+    var filter by rememberSaveable { mutableStateOf("ALLE") }
+    var showInfo by rememberSaveable { mutableStateOf(false) }
+    val dayTrades = state.signals.filter { it.category in Strategies.dayCodes }
+    val shown = if (filter == "ALLE") dayTrades else dayTrades.filter { it.category == filter }
+    val closedShown = shown.filter { !it.isOpen }.sortedBy { it.exitTs }
 
     Screen {
-        item { Title("Daytrades", "Opening Range Breakout · max. 1 Handelstag") { RefreshButton(state) } }
-        item { PnlCard(total, closed, "Paper-Ergebnis der Daytrades") }
+        item { Title("Strategien", "Paper-Vergleich · jede Position max. 24 h") { RefreshButton(state) } }
+        item { ComparisonCard(state.signals) { filter = if (it in Strategies.dayCodes) it else "ALLE" } }
         item {
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                StatTile("Treffer", hitRate(closed), "${closed.size} abgeschl.", Modifier.weight(1f))
-                StatTile("Ø Gewinn", avgWin, "Ø Verlust $avgLoss", Modifier.weight(1.4f))
-                StatTile("Offen", "${trades.count { it.isOpen }}", "heute", Modifier.weight(1f))
+            PnlCard(
+                closedShown.sumOf { it.pnlEur }, closedShown,
+                if (filter == "ALLE") "Paper-Ergebnis aller Daytrade-Strategien" else "Paper-Ergebnis: ${Strategies.name(filter)}",
+            )
+        }
+        item {
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                (listOf("ALLE") + Strategies.all.map { it.code }.filter { it in Strategies.dayCodes }).forEach { code ->
+                    FilterChip(
+                        selected = filter == code,
+                        onClick = { filter = code },
+                        label = { Text(if (code == "ALLE") "Alle" else Strategies.name(code)) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            containerColor = C.Card,
+                            labelColor = C.Muted,
+                            selectedContainerColor = C.Accent.copy(alpha = 0.25f),
+                            selectedLabelColor = C.Text,
+                        ),
+                    )
+                }
             }
         }
         item {
@@ -456,31 +483,84 @@ fun DaytradeScreen(state: AppState) {
                     }
                 }
                 Text(
-                    "Signale kommen 5–45 min nach der Eröffnung.",
-                    color = C.Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp),
+                    "Zeitfenster (dt. Zeit): ORB 9:05/15:35 · Silver Bullet 16–17 · VWAP 16:30 · Intraday-Momentum 21:30 · Overnight 21:55 · News pur jederzeit",
+                    color = C.Muted, fontSize = 12.sp, lineHeight = 17.sp, modifier = Modifier.padding(top = 6.dp),
                 )
             }
         }
         item { SectionTitle("Trades") }
-        if (trades.isEmpty()) {
-            item { Text("Noch keine Daytrades. Der erste kommt nach der nächsten Eröffnung.", color = C.Muted, fontSize = 14.sp) }
+        if (shown.isEmpty()) {
+            item { Text("Noch keine Trades für diese Auswahl.", color = C.Muted, fontSize = 14.sp) }
         }
-        items(trades, key = { it.id }) { SignalCard(it) }
-        item { SectionTitle("Strategie") }
+        items(shown.take(150), key = { it.id }) { SignalCard(it) }
         item {
-            CardBox {
-                Text(
-                    "Opening Range Breakout (5 min), angelehnt an veröffentlichte Studien zum Nasdaq-ETF und zu „Stocks in Play“.\n\n" +
-                        "1. Erste 5-min-Kerze nach Börseneröffnung (DAX 9:00, USA 15:30 deutsche Zeit).\n" +
-                        "2. Grüne Kerze → Long, rote Kerze → Short, ohne Bewegung kein Trade.\n" +
-                        "3. Aktien nur, wenn das Volumen der ersten Kerze mind. 1,5× so hoch ist wie an den Vortagen – oder an Earnings-Tagen.\n" +
-                        "4. Stop am anderen Ende der ersten Kerze, Ziel 10R, sonst Ausstieg zum Handelsschluss.\n" +
-                        "5. Das News-Sentiment wird nur angezeigt (✓/✗), filtert aber nicht.\n\n" +
-                        "Erwartung: Trefferquote oft nur 20–35 %, dafür einzelne große Gewinner. Längere Verlustserien sind normal.",
-                    color = C.Text, fontSize = 13.sp, lineHeight = 19.sp,
-                )
+            OutlinedButton(
+                onClick = { Export.share(ctx, state.signals) },
+                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                shape = RoundedCornerShape(14.dp),
+            ) { Text("Alle Trades als CSV teilen (${state.signals.size})", color = C.AccentSoft) }
+        }
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SectionTitle("So funktionieren die Strategien")
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = { showInfo = !showInfo }) {
+                    Text(if (showInfo) "ausblenden" else "anzeigen", color = C.AccentSoft)
+                }
             }
         }
+        if (showInfo) {
+            items(Strategies.all) { info ->
+                CardBox {
+                    Text(info.name, color = C.Text, fontWeight = FontWeight.Bold)
+                    Text(info.desc, color = C.Text.copy(alpha = 0.85f), fontSize = 13.sp, lineHeight = 18.sp)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ComparisonCard(signals: List<Signal>, onPick: (String) -> Unit) {
+    data class Row3(val code: String, val name: String, val closed: Int, val open: Int, val hit: String, val pnl: Double, val avg: Double)
+    val rows = Strategies.all.map { info ->
+        val mine = signals.filter { it.category == info.code }
+        val closed = mine.filter { !it.isOpen }
+        val pnl = closed.sumOf { it.pnlEur }
+        Row3(info.code, info.name, closed.size, mine.count { it.isOpen }, hitRate(closed), pnl, if (closed.isEmpty()) 0.0 else pnl / closed.size)
+    }.sortedWith(compareByDescending<Row3> { it.closed > 0 }.thenByDescending { it.pnl })
+
+    CardBox {
+        Text("Vergleich aller Strategien", color = C.Muted, fontSize = 13.sp)
+        Spacer(Modifier.height(8.dp))
+        Row {
+            Text("Strategie", color = C.Muted, fontSize = 11.sp, modifier = Modifier.weight(2.2f))
+            Text("Trades", color = C.Muted, fontSize = 11.sp, modifier = Modifier.weight(0.9f))
+            Text("Treffer", color = C.Muted, fontSize = 11.sp, modifier = Modifier.weight(0.9f))
+            Text("Ø/Trade", color = C.Muted, fontSize = 11.sp, modifier = Modifier.weight(1.1f))
+            Text("Summe", color = C.Muted, fontSize = 11.sp, modifier = Modifier.weight(1.2f))
+        }
+        rows.forEach { r ->
+            val pnlColor = when {
+                r.closed == 0 -> C.Muted
+                r.pnl >= 0 -> C.Green
+                else -> C.Red
+            }
+            Row(
+                Modifier.fillMaxWidth().clickable { onPick(r.code) }.padding(vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(r.name, color = C.Text, fontSize = 13.sp, modifier = Modifier.weight(2.2f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(if (r.open > 0) "${r.closed}+${r.open}" else "${r.closed}", color = C.Text, fontSize = 13.sp, modifier = Modifier.weight(0.9f))
+                Text(r.hit, color = C.Text, fontSize = 13.sp, modifier = Modifier.weight(0.9f))
+                Text(if (r.closed == 0) "–" else Fmt.eurPlain(r.avg), color = pnlColor, fontSize = 13.sp, modifier = Modifier.weight(1.1f))
+                Text(if (r.closed == 0) "–" else Fmt.eurPlain(r.pnl), color = pnlColor, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1.2f))
+            }
+        }
+        Text(
+            "Trades: abgeschlossen + offen. Tippen filtert die Liste. Aussagekräftig erst ab ca. 30 Trades je Strategie.",
+            color = C.Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp),
+        )
     }
 }
 

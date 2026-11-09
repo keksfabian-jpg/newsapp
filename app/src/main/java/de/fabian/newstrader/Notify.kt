@@ -25,9 +25,10 @@ object Notify {
 
     fun signal(ctx: Context, s: Signal, daytrade: Boolean = false) {
         val side = if (s.dir == 1) "LONG" else "SHORT"
-        val prefix = if (daytrade) "Daytrade: " else ""
+        val prefix = if (daytrade) "${Strategies.name(s.category)}: " else ""
         val title = "$prefix$side ${assetName(s.assetId)} @ ${Fmt.price(s.entry)}"
-        val text = "SL ${Fmt.price(s.sl)} · TP ${Fmt.price(s.tp)}\n${s.reason}"
+        val tp = if (s.tp > 0) " · TP ${Fmt.price(s.tp)}" else " · Zeitausstieg ${Fmt.time(s.exitAt)}"
+        val text = "SL ${Fmt.price(s.sl)}$tp\n${s.reason}"
         show(ctx, CH_SIGNAL, s.id.hashCode(), title, text)
     }
 
@@ -35,7 +36,7 @@ object Notify {
         val how = when (s.status) {
             "TP" -> "Take-Profit erreicht"
             "SL" -> "Stop-Loss erreicht"
-            "EOD" -> "zum Handelsschluss geschlossen"
+            "EOD" -> "planmäßig zum Zeitausstieg geschlossen"
             else -> "nach 24 h geschlossen"
         }
         show(ctx, CH_RESULT, s.id.hashCode() + 1, "${assetName(s.assetId)}: ${Fmt.eur(s.pnlEur)}", "$how (${Fmt.pct(s.pct)} im Basiswert)")

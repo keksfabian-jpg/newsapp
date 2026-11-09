@@ -63,11 +63,20 @@ object Runner {
         }
 
         // 3) Offene Signale auswerten
-        val evaluated = st.signals.map { sig -> candles[sig.assetId]?.let { Engine.evaluate(sig, it, now, s) } ?: sig }
+        val evaluated = st.signals.map { sig ->
+            val cs = candles[sig.assetId]
+            when {
+                cs == null -> sig
+                sig.category == CAT_NEWS -> Daytrade.evaluateTimed(sig, cs, now, s, 900)
+                sig.category in Strategies.sweepCodes -> Engine.evaluate(sig, cs, now, s)
+                else -> sig
+            }
+        }
         val newlyClosed = evaluated.filter { e -> !e.isOpen && st.signals.any { it.id == e.id && it.isOpen } }
 
         // 4) News + KI-Sentiment (alle 30 min)
         var sentiments = st.sentiments
+        var sentimentsFresh = false
         var sentTs = st.sentimentTs
         var news = st.news
         if (finnKey.isNotBlank() && now - sentTs > 30 * 60) {
@@ -98,6 +107,7 @@ object Runner {
                 try {
                     val ev = calendar.filter { it.impact == "High" && it.ts > now - 6 * 3600 && it.ts < now + 24 * 3600 }
                     sentiments = ClaudeApi.sentiment(claudeKey, assets, news, ev, now).associateBy { it.assetId }
+                    sentimentsFresh = true
                 } catch (e: Exception) {
                     errors += "KI (Claude): ${friendly(e)}"
                     sentTs = now - 20 * 60
@@ -112,16 +122,33 @@ object Runner {
             val cs = candles[a.id] ?: continue
             val sw = Engine.detect(a, cs, now) ?: continue
             val day = Engine.dayStart(sw.ts)
-            if (all.any { it.assetId == a.id && it.dir == sw.dir && Engine.dayStart(it.ts) == day }) continue
+            if (all.any {
+                    it.category in Strategies.sweepCodes && it.assetId == a.id && it.dir == sw.dir &&
+                        Engine.dayStart(it.ts) == day
+                }
+            ) continue
             val sent = sentiments[a.id]?.takeIf { now - it.ts < 6 * 3600 }
             val sig = Engine.build(a, sw, sent, s, calendar, earnings, now)
             all += sig
             created += sig
         }
 
-        // 6) Daytrades (Opening Range Breakout)
-        val day = Daytrade.step(all.filter { it.category == Daytrade.CAT }, now, s, sentiments, earnings, errors)
-        all.removeAll { it.category == Daytrade.CAT }
+        // 6) News pur: direkt nach frischer KI-Bewertung
+        val newsCreated = ArrayList<Signal>()
+        if (sentimentsFresh) {
+            for (a in assets) {
+                val cs = candles[a.id] ?: continue
+                val sent = sentiments[a.id] ?: continue
+                val sig = Daytrade.detectNews(a, cs, sent, now, all) ?: continue
+                all += sig
+                newsCreated += sig
+            }
+        }
+
+        // 7) Daytrade-Strategien (ORB, Intraday-Momentum, Overnight, Silver Bullet, VWAP)
+        val dayCodes = Strategies.dayCodes - CAT_NEWS
+        val day = Daytrade.step(all.filter { it.category in dayCodes }, now, s, sentiments, earnings, errors)
+        all.removeAll { it.category in dayCodes }
         all += day.signals
 
         val finalNews = news
@@ -132,7 +159,7 @@ object Runner {
         val finalCalTs = calTs
         Store.update {
             it.copy(
-                signals = all.sortedByDescending { x -> x.ts }.take(400),
+                signals = all.sortedByDescending { x -> x.ts }.take(1500),
                 sentiments = finalSent,
                 calendar = finalCal,
                 earnings = finalEarn,
@@ -147,11 +174,11 @@ object Runner {
         created.filter { it.category == CAT_PROPOSAL }.forEach { Notify.signal(ctx, it) }
         newlyClosed.filter { it.category == CAT_PROPOSAL }.forEach { Notify.result(ctx, it) }
         if (s.daytradePush) {
-            day.created.forEach { Notify.signal(ctx, it, daytrade = true) }
-            day.closed.forEach { Notify.result(ctx, it) }
+            (day.created + newsCreated).forEach { Notify.signal(ctx, it, daytrade = true) }
+            (day.closed + newlyClosed.filter { it.category == CAT_NEWS }).forEach { Notify.result(ctx, it) }
         }
 
-        // gezielter Lauf kurz nach der nächsten Börseneröffnung
-        RefreshWorker.scheduleAt(ctx, Daytrade.nextRunTarget(now))
+        // gezielte Läufe zu den Strategie-Zeitpunkten (Eröffnungen, Silver Bullet, VWAP, Intraday-Momentum, Overnight)
+        Daytrade.nextRunTargets(now).forEach { RefreshWorker.scheduleAt(ctx, it) }
     }
 }

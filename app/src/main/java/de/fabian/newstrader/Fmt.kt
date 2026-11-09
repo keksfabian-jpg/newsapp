@@ -23,7 +23,7 @@ object Fmt {
     }
 
     fun eur(v: Double): String = String.format(de, "%+,.2f €", v)
-    fun eurPlain(v: Double): String = String.format(de, "%,.0f €", v)
+    fun eurPlain(v: Double): String = String.format(de, "%+,.0f €", v)
     fun pct(v: Double): String = String.format(de, "%+.2f %%", v * 100)
     fun score(v: Double): String = String.format(de, "%+.1f", v)
     fun dateTime(sec: Long): String = dateTimeF.format(local(sec))
