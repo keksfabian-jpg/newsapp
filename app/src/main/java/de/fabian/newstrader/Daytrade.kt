@@ -120,6 +120,10 @@ object Daytrade {
     const val TARGET_R = 10.0
     const val MIN_RVOL = 1.5
     const val BAR = 300L
+    private const val GRACE = 6 * 3600L
+
+    /** Ab dieser Verspätung gilt ein Trade als nachgetragen (kein Push mehr). */
+    const val LATE = 45 * 60L
     private val NYZ: ZoneId = ZoneId.of(DayAssets.NY)
     private val LON: ZoneId = ZoneId.of("Europe/London")
 
@@ -262,11 +266,13 @@ object Daytrade {
             if (key in decided || key in ids) continue
             val from = spec.from(a, d)
             val until = spec.until(a, d)
-            if (now in from..until) {
+            // Einstiege hängen nur von den Kerzen ab, deshalb wird ein verpasstes Fenster bis zu 6 h nachgetragen
+            val grace = until + GRACE
+            if (now in from..grace) {
                 slots += Slot(spec, a, d, key)
-            } else if (now > until && now < until + 3 * 3600) {
+            } else if (now > grace && now < grace + 3 * 3600) {
                 newDecided += key
-                log += "– ${Strategies.short(spec.code)} ${a.name}: im Zeitfenster keine vollständigen Kurse erhalten"
+                log += "– ${Strategies.short(spec.code)} ${a.name}: Zeitfenster verpasst (keine vollständigen Kurse erhalten)"
             }
         }
 
@@ -317,7 +323,8 @@ object Daytrade {
             }
             when (dec) {
                 is Dec.Trade -> {
-                    val sig = dec.sig.copy(id = slot.key)
+                    val late = now - dec.sig.ts > LATE
+                    val sig = dec.sig.copy(id = slot.key, tags = if (late) dec.sig.tags + "nachgetragen" else dec.sig.tags)
                     all += sig
                     created += sig
                     newDecided += slot.key

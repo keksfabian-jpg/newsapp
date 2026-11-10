@@ -200,7 +200,7 @@ object Runner {
         created.filter { it.category == CAT_PROPOSAL }.forEach { Notify.signal(ctx, it) }
         newlyClosed.filter { it.category == CAT_PROPOSAL }.forEach { Notify.result(ctx, it) }
         if (s.daytradePush) {
-            (dayCreated + newsCreated).forEach { Notify.signal(ctx, it, daytrade = true) }
+            (dayCreated + newsCreated).filter { now - it.ts <= Daytrade.LATE }.forEach { Notify.signal(ctx, it, daytrade = true) }
             (day.closed + newlyClosed.filter { it.category == CAT_NEWS }).forEach { Notify.result(ctx, it) }
         }
     }
