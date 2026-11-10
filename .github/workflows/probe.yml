@@ -1,0 +1,36 @@
+name: Probe data
+on:
+  workflow_dispatch:
+  push:
+    paths: ['.github/workflows/probe.yml']
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Yahoo
+        run: |
+          date -u +"now %s %H:%M:%S"
+          for spec in "NQ=F 5m" "ES=F 5m" "EURUSD=X 5m" "EURUSD=X 15m" "%5EGDAXI 5m" "%5EN225 5m" "%5EHSI 5m" "NIY=F 5m" "AAPL 5m" "GC=F 5m" "JPY=X 5m"; do
+            set -- $spec
+            echo "=== $1 $2"
+            curl -s -m 20 -A "Mozilla/5.0 (Linux; Android 15) NewsTrader/1.0" "https://query1.finance.yahoo.com/v8/finance/chart/$1?interval=$2&range=5d" > out.json || true
+            python3 - <<'PY'
+          import json,time
+          try:
+              r=json.load(open('out.json'))['chart']['result'][0]
+              m=r['meta']; ts=r['timestamp']; q=r['indicators']['quote'][0]
+              now=int(time.time())
+              print('n',len(ts),'tz',m.get('exchangeTimezoneName'),'gmtoff',m.get('gmtoffset'),'rmt_age',now-m.get('regularMarketTime',0),'granularity',m.get('dataGranularity'))
+              tp=m.get('currentTradingPeriod',{}).get('regular',{})
+              print('regular',tp.get('start'),tp.get('end'))
+              for i in range(max(0,len(ts)-4),len(ts)):
+                  print(ts[i], time.strftime('%H:%M:%S',time.gmtime(ts[i])),'age',now-ts[i],'mod300',ts[i]%300, q['open'][i],q['high'][i],q['low'][i],q['close'][i],q['volume'][i])
+              days={}
+              for t in ts:
+                  d=time.strftime('%m-%d',time.gmtime(t+m.get('gmtoffset',0))); days.setdefault(d,[]).append(t)
+              for d,l in days.items():
+                  print(d,len(l),time.strftime('%H:%M',time.gmtime(l[0]+m.get('gmtoffset',0))),time.strftime('%H:%M',time.gmtime(l[-1]+m.get('gmtoffset',0))))
+          except Exception as e:
+              print('ERR',e, open('out.json').read()[:200])
+          PY
+          done
