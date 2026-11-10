@@ -11,6 +11,8 @@ object Fmt {
     private val dateTimeF = DateTimeFormatter.ofPattern("dd.MM. HH:mm", de)
     private val timeF = DateTimeFormatter.ofPattern("HH:mm", de)
     private val dayF = DateTimeFormatter.ofPattern("EEEE, dd.MM.", de)
+    private val dayTimeF = DateTimeFormatter.ofPattern("EEE HH:mm", de)
+    private val logF = DateTimeFormatter.ofPattern("dd.MM. HH:mm", de)
     private val utcF = DateTimeFormatter.ofPattern("EEE HH:mm", Locale.ENGLISH)
 
     private fun local(sec: Long) = Instant.ofEpochSecond(sec).atZone(ZoneId.systemDefault())
@@ -29,6 +31,9 @@ object Fmt {
     fun dateTime(sec: Long): String = dateTimeF.format(local(sec))
     fun time(sec: Long): String = timeF.format(local(sec))
     fun day(sec: Long): String = dayF.format(local(sec))
+    fun dayTime(sec: Long): String = dayTimeF.format(local(sec))
+    fun log(sec: Long): String = logF.format(local(sec))
+    fun r(v: Double): String = String.format(de, "%+.1fR", v)
     fun utc(sec: Long): String = utcF.format(Instant.ofEpochSecond(sec).atOffset(ZoneOffset.UTC))
 
     fun ago(sec: Long, now: Long): String {

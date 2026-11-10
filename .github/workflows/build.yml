@@ -25,7 +25,7 @@ jobs:
           gradle-version: '8.11.1'
 
       - name: Build
-        run: gradle :app:assembleRelease --no-daemon --stacktrace
+        run: gradle :app:testReleaseUnitTest :app:assembleRelease --no-daemon --stacktrace
 
       - name: Rename APK
         run: cp app/build/outputs/apk/release/app-release.apk NewsTrader.apk

@@ -37,7 +37,7 @@ object Engine {
         val label: String
         when (a.ref) {
             RefType.ASIA -> {
-                val asia = candles.filter { it.ts >= today && it.ts < today + 7 * 3600 }
+                val asia = candles.filter { it.ts >= today && it.ts < today + 7 * 3600 && !it.partial }
                 if (asia.size < 12) return null
                 refHigh = asia.maxOf { it.h }
                 refLow = asia.minOf { it.l }
@@ -54,7 +54,7 @@ object Engine {
         }
 
         val windowStart = today + a.windowStartMin * 60L
-        val done = candles.filter { it.ts >= windowStart && it.ts + BAR <= now + 30 }
+        val done = candles.filter { it.ts >= windowStart && it.ts + BAR <= now + 30 && !it.partial }
         for (c in done.takeLast(2).reversed()) {
             if (c.h > refHigh && c.c < refHigh) return Sweep(-1, c.ts, c.c, c.h, refHigh, refLow, label)
             if (c.l < refLow && c.c > refLow) return Sweep(1, c.ts, c.c, c.l, refHigh, refLow, label)
@@ -123,28 +123,53 @@ object Engine {
     }
 
     /** Paper-Auswertung: SL zuerst prüfen (konservativ), nach 24 h zum letzten Kurs schließen. */
-    fun evaluate(sig: Signal, candles: List<Candle>, now: Long, s: Settings): Signal {
+    fun evaluate(sig: Signal, candles: List<Candle>, now: Long): Signal {
         if (!sig.isOpen) return sig
         val after = candles.filter { it.ts >= sig.ts + BAR }
         for (c in after) {
             if (sig.dir == 1) {
-                if (c.l <= sig.sl) return close(sig, sig.sl, c.ts, "SL", s)
-                if (c.h >= sig.tp) return close(sig, sig.tp, c.ts, "TP", s)
+                if (c.l <= sig.sl) return close(sig, sig.sl, c.ts, "SL", after)
+                if (c.h >= sig.tp) return close(sig, sig.tp, c.ts, "TP", after)
             } else {
-                if (c.h >= sig.sl) return close(sig, sig.sl, c.ts, "SL", s)
-                if (c.l <= sig.tp) return close(sig, sig.tp, c.ts, "TP", s)
+                if (c.h >= sig.sl) return close(sig, sig.sl, c.ts, "SL", after)
+                if (c.l <= sig.tp) return close(sig, sig.tp, c.ts, "TP", after)
             }
         }
         if (now - sig.ts > 24 * 3600 && after.isNotEmpty()) {
             val last = after.last()
-            return close(sig, last.c, last.ts, "ZEIT", s)
+            return close(sig, last.c, last.ts, "ZEIT", after)
         }
         return sig
     }
 
-    fun close(sig: Signal, exit: Double, ts: Long, status: String, s: Settings): Signal {
+    /** bars = Kerzen ab Einstieg; daraus wird die größte Gegenbewegung bis zum Ausstieg bestimmt. */
+    fun close(sig: Signal, exit: Double, ts: Long, status: String, bars: List<Candle>): Signal {
         val pct = (exit - sig.entry) / sig.entry * sig.dir
-        val pnl = max(s.stake * s.leverage * pct, -s.stake) - 2.0
-        return sig.copy(status = status, exitPrice = exit, exitTs = ts, pct = pct, pnlEur = pnl)
+        return sig.copy(status = status, exitPrice = exit, exitTs = ts, pct = pct, mae = mae(sig, bars, ts, status, exit))
+    }
+
+    /**
+     * Größte Gegenbewegung als Anteil vom Einstieg. Bei SL/TP ist die Reihenfolge innerhalb der Ausstiegskerze
+     * unbekannt und beim Zeitausstieg wird zu ihrer Eröffnung verkauft – dort zählt nur der Ausstiegskurs.
+     */
+    fun mae(sig: Signal, bars: List<Candle>, exitTs: Long, status: String, exit: Double): Double {
+        var worst = 0.0
+        for (c in bars) {
+            if (c.ts > exitTs) break
+            if (c.ts == exitTs && (status == "SL" || status == "TP" || status == "EOD")) break
+            val adverse = if (sig.dir == 1) (sig.entry - c.l) / sig.entry else (c.h - sig.entry) / sig.entry
+            if (adverse > worst) worst = adverse
+        }
+        val atExit = (sig.entry - exit) / sig.entry * sig.dir
+        return max(worst, max(atExit, 0.0))
+    }
+
+    /** Größte Gegenbewegung für ältere, schon geschlossene Trades nachtragen (für die KO-Simulation). */
+    fun backfillMae(sig: Signal, cs: List<Candle>, bar: Long, startOffset: Long): Signal {
+        if (sig.isOpen || sig.mae >= 0) return sig
+        val start = sig.ts + startOffset
+        if (cs.isEmpty() || cs.first().ts > start) return sig
+        val bars = cs.filter { it.ts >= start && it.ts <= sig.exitTs + bar }
+        return sig.copy(mae = mae(sig, bars, sig.exitTs, sig.status, sig.exitPrice))
     }
 }

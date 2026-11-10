@@ -2,24 +2,30 @@ package de.fabian.newstrader
 
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.time.LocalDate
 import java.time.ZoneOffset
 
-/** Ein kompletter Update-Durchlauf (läuft im Hintergrund per WorkManager). */
+/** Ein kompletter Update-Durchlauf (läuft im Hintergrund per WorkManager, ausgelöst durch Takt oder Wecker). */
 object Runner {
+    private val lock = Mutex()
 
-    suspend fun run(ctx: Context) = withContext(Dispatchers.IO) {
+    suspend fun run(ctx: Context, src: String = "Takt") = withContext(Dispatchers.IO) {
         Store.init(ctx)
-        Store.update { it.copy(running = true) }
-        try {
-            runInner(ctx)
-        } finally {
-            Store.update { it.copy(running = false) }
+        lock.withLock {
+            Store.update { it.copy(running = true) }
+            try {
+                runInner(ctx, src)
+            } finally {
+                Store.update { it.copy(running = false) }
+                Alarms.scheduleNext(ctx)
+            }
         }
     }
 
-    private fun runInner(ctx: Context) {
+    private fun runInner(ctx: Context, src: String) {
         val st = Store.state.value
         val s = st.settings
         val now = System.currentTimeMillis() / 1000
@@ -52,9 +58,11 @@ object Runner {
             }
         }
 
-        // 2) Kerzen
+        // 2) Kerzen (15 min) – auch für abgeschaltete Märkte mit noch offenem Trade
+        val openIds = st.signals.filter { it.isOpen }.map { it.assetId }.toSet()
         val candles = HashMap<String, List<Candle>>()
-        for (a in assets) {
+        for (a in Assets.all) {
+            if (a !in assets && a.id !in openIds) continue
             try {
                 candles[a.id] = Sources.candles(a)
             } catch (e: Exception) {
@@ -67,8 +75,8 @@ object Runner {
             val cs = candles[sig.assetId]
             when {
                 cs == null -> sig
-                sig.category == CAT_NEWS -> Daytrade.evaluateTimed(sig, cs, now, s, 900)
-                sig.category in Strategies.sweepCodes -> Engine.evaluate(sig, cs, now, s)
+                sig.category == CAT_NEWS -> Engine.backfillMae(Daytrade.evaluateTimed(sig, cs, now, 900), cs, 900, 0)
+                sig.category in Strategies.sweepCodes -> Engine.backfillMae(Engine.evaluate(sig, cs, now), cs, 900, 900)
                 else -> sig
             }
         }
@@ -115,6 +123,8 @@ object Runner {
             }
         }
 
+        val log = ArrayList<String>()
+
         // 5) Neue Sweeps → Signale
         val all = evaluated.toMutableList()
         val created = ArrayList<Signal>()
@@ -128,9 +138,10 @@ object Runner {
                 }
             ) continue
             val sent = sentiments[a.id]?.takeIf { now - it.ts < 6 * 3600 }
-            val sig = Engine.build(a, sw, sent, s, calendar, earnings, now)
+            val sig = Events.annotate(Engine.build(a, sw, sent, s, calendar, earnings, now), calendar)
             all += sig
             created += sig
+            log += "✓ ${Strategies.short(sig.category)} ${a.name}: ${if (sig.dir == 1) "LONG" else "SHORT"} @ ${Fmt.price(sig.entry)}"
         }
 
         // 6) News pur: direkt nach frischer KI-Bewertung
@@ -139,18 +150,31 @@ object Runner {
             for (a in assets) {
                 val cs = candles[a.id] ?: continue
                 val sent = sentiments[a.id] ?: continue
-                val sig = Daytrade.detectNews(a, cs, sent, now, all) ?: continue
+                val sig = Daytrade.detectNews(a, cs, sent, now, all)?.let { Events.annotate(it, calendar) } ?: continue
                 all += sig
                 newsCreated += sig
+                log += "✓ News pur ${a.name}: ${if (sig.dir == 1) "LONG" else "SHORT"} @ ${Fmt.price(sig.entry)}"
             }
         }
 
-        // 7) Daytrade-Strategien (ORB, Intraday-Momentum, Overnight, Silver Bullet, VWAP)
+        // 7) Daytrade-Strategien auf 5-min-Kerzen
         val dayCodes = Strategies.dayCodes - CAT_NEWS
-        val day = Daytrade.step(all.filter { it.category in dayCodes }, now, s, sentiments, earnings, errors)
+        val day = Daytrade.step(all.filter { it.category in dayCodes }, st.decided, now, sentiments, earnings, calendar, errors)
+        val dayCreated = day.created.map { Events.annotate(it, calendar) }
+        val annotated = dayCreated.associateBy { it.id }
         all.removeAll { it.category in dayCodes }
-        all += day.signals
+        all += day.signals.map { annotated[it.id] ?: it }
+        log += day.log
 
+        val closedCount = newlyClosed.size + day.closed.size
+        val summary = "${Fmt.log(now)} $src · geprüft ${day.checked}" +
+            (if (day.waiting > 0) " · wartet ${day.waiting}" else "") +
+            (if (created.size + newsCreated.size + dayCreated.size > 0) " · neu ${created.size + newsCreated.size + dayCreated.size}" else "") +
+            (if (closedCount > 0) " · geschlossen $closedCount" else "") +
+            (if (errors.isNotEmpty()) " · Fehler ${errors.size}" else "")
+        val newLog = (listOf(summary) + log.map { "   $it" } + errors.take(3).map { "   ! $it" })
+
+        val cutoff = todayUtc.minusDays(4).toString()
         val finalNews = news
         val finalSent = sentiments
         val finalCal = calendar
@@ -168,17 +192,16 @@ object Runner {
                 calendarTs = finalCalTs,
                 lastRun = now,
                 lastError = errors.take(4).joinToString("\n"),
+                log = (newLog + it.log).take(250),
+                decided = (it.decided + day.decided).filter { k -> k.takeLast(10) >= cutoff }.toSet(),
             )
         }
 
         created.filter { it.category == CAT_PROPOSAL }.forEach { Notify.signal(ctx, it) }
         newlyClosed.filter { it.category == CAT_PROPOSAL }.forEach { Notify.result(ctx, it) }
         if (s.daytradePush) {
-            (day.created + newsCreated).forEach { Notify.signal(ctx, it, daytrade = true) }
+            (dayCreated + newsCreated).forEach { Notify.signal(ctx, it, daytrade = true) }
             (day.closed + newlyClosed.filter { it.category == CAT_NEWS }).forEach { Notify.result(ctx, it) }
         }
-
-        // gezielte Läufe zu den Strategie-Zeitpunkten (Eröffnungen, Silver Bullet, VWAP, Intraday-Momentum, Overnight)
-        Daytrade.nextRunTargets(now).forEach { RefreshWorker.scheduleAt(ctx, it) }
     }
 }

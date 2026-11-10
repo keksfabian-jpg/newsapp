@@ -51,7 +51,14 @@ object Assets {
     fun byId(id: String) = all.firstOrNull { it.id == id }
 }
 
-data class Candle(val ts: Long, val o: Double, val h: Double, val l: Double, val c: Double, val v: Double = 0.0)
+/** partial = Kerze läuft laut Datenstand noch (Kurse kommen teils 10–15 min verzögert). */
+data class Candle(
+    val ts: Long, val o: Double, val h: Double, val l: Double, val c: Double,
+    val v: Double = 0.0, val partial: Boolean = false,
+)
+
+/** Währungen, deren Wirtschaftstermine einen Markt bewegen. */
+fun assetCurrencies(id: String): List<String> = Assets.byId(id)?.currencies ?: DayAssets.byId(id)?.cur ?: emptyList()
 
 /** Name eines Markts aus beiden Listen (Sweep-Assets und Daytrade-Assets). */
 fun assetName(id: String): String = Assets.byId(id)?.name ?: DayAssets.byId(id)?.name ?: id
@@ -59,10 +66,15 @@ fun assetName(id: String): String = Assets.byId(id)?.name ?: DayAssets.byId(id)?
 const val CAT_PROPOSAL = "VORSCHLAG"
 const val CAT_SWEEP_ONLY = "NUR_SWEEP"
 const val CAT_ORB = "ORB"
+const val CAT_AORB = "AORB"
 const val CAT_IM = "IM"
 const val CAT_ON = "ON"
 const val CAT_SB = "SB"
+const val CAT_SBL = "SBL"
+const val CAT_SBP = "SBP"
+const val CAT_LBO = "LBO"
 const val CAT_VWAP = "VWAP"
+const val CAT_FTD = "FTD"
 const val CAT_NEWS = "NEWS"
 
 data class StratInfo(val code: String, val name: String, val desc: String)
@@ -78,8 +90,36 @@ object Strategies {
             "Gleicher Liquidity Sweep wie oben, aber ohne News-Bestätigung. Zeigt, ob die News überhaupt etwas bringen.",
         ),
         StratInfo(
+            CAT_FTD, "Fable-Trendtag (Eigenentwicklung)",
+            "Sucht Trendtage in Nasdaq und S&P zwischen 16:30 und 19:00 (dt.). Einstieg nur, wenn alles zusammenpasst: Kurs außerhalb der ersten 30 Minuten, mind. ein Drittel der üblichen Tagesspanne gelaufen, Bewegung sauber statt zackig (Effizienz ≥ 0,35), ≥ 80 % der Kerzen auf derselben VWAP-Seite und der andere Index bestätigt. Stop knapp hinter dem VWAP. Kein festes Ziel: Ausstieg, sobald eine Kerze den VWAP zurückkreuzt, spätestens 21:55. Ungetestet – die Paper-Daten entscheiden.",
+        ),
+        StratInfo(
             CAT_ORB, "Opening Range Breakout",
-            "Erste 5-min-Kerze nach Eröffnung (DAX 9:00, USA 15:30) gibt die Richtung vor. Aktien nur bei 1,5× Volumen oder Earnings. Stop am anderen Kerzenende, Ziel 10R, Exit zum Handelsschluss.",
+            "Erste 5-min-Kerze nach Eröffnung (DAX 9:00, USA 15:30) gibt die Richtung vor, Einstieg zur Eröffnung der zweiten Kerze. Aktien nur bei 1,5× Volumen oder Earnings. Stop am anderen Kerzenende, Ziel 10R, Exit zum Handelsschluss.",
+        ),
+        StratInfo(
+            CAT_AORB, "Asien-ORB (Nikkei, Hang Seng)",
+            "Gleiche Regel wie der Opening Range Breakout, aber zur Eröffnung in Tokio (1:00 dt.) und Hongkong (2:30 dt.). Achtung: Zu diesen Zeiten sind KO-Scheine bei Trade Republic nicht handelbar – reine Beobachtung.",
+        ),
+        StratInfo(
+            CAT_SBL, "ICT Silver Bullet London",
+            "9–10 Uhr (dt.): Hoch/Tief der Nacht (ab 0 Uhr dt.) wird gesweept, danach Fair Value Gap in Gegenrichtung → Einstieg. Stop hinter dem Sweep, Ziel 2R, Exit 14:00. Nasdaq, S&P, Gold, EUR/USD, GBP/USD.",
+        ),
+        StratInfo(
+            CAT_SB, "ICT Silver Bullet New York",
+            "16–17 Uhr (dt.): Hoch/Tief der ersten 30 min wird gesweept, danach Fair Value Gap in Gegenrichtung → Einstieg. Stop hinter dem Sweep, Ziel 2R, Exit 22:00. Nasdaq, S&P, Gold.",
+        ),
+        StratInfo(
+            CAT_SBP, "ICT Silver Bullet Nachmittag",
+            "20–21 Uhr (dt.): Hoch/Tief der Mittagsrange (18–20 Uhr) wird gesweept, danach Fair Value Gap in Gegenrichtung → Einstieg. Stop hinter dem Sweep, Ziel 2R, Exit 22:00. Nasdaq, S&P.",
+        ),
+        StratInfo(
+            CAT_LBO, "London Breakout",
+            "Gegenstück zum Sweep: Schließt eine 5-min-Kerze zwischen 8 und 11 Uhr (dt.) klar außerhalb der Asia-Range, wird MIT dem Ausbruch gehandelt. Stop in der Range-Mitte, Ziel 1,5R, Exit 17:00. EUR/USD, GBP/USD, USD/JPY, Gold.",
+        ),
+        StratInfo(
+            CAT_VWAP, "Orderflow-Näherung (VWAP)",
+            "Um 16:30 (dt.): Kurs klar über/unter dem VWAP seit Eröffnung UND Kaufdruck-Näherung aus dem Volumen in dieselbe Richtung → mit dem Trend handeln. Stop am VWAP, Ziel 2R, Exit 22:00. Echte Orderbuchdaten sind nicht frei verfügbar.",
         ),
         StratInfo(
             CAT_IM, "Intraday-Momentum",
@@ -87,24 +127,17 @@ object Strategies {
         ),
         StratInfo(
             CAT_ON, "Overnight-Effekt",
-            "S&P/Nasdaq Long kurz vor US-Schluss (ca. 22:00), Verkauf zur US-Eröffnung am nächsten Tag (15:30). Nur Mo–Do. Ein großer Teil der Aktienrendite entsteht über Nacht.",
-        ),
-        StratInfo(
-            CAT_SB, "ICT Silver Bullet",
-            "16–17 Uhr (dt.): Hoch/Tief der ersten 30 min wird gesweept, danach entsteht eine Fair Value Gap in Gegenrichtung → Einstieg. Stop hinter dem Sweep, Ziel 2R, Exit 22:00. Nasdaq, S&P, Gold.",
-        ),
-        StratInfo(
-            CAT_VWAP, "Orderflow-Näherung (VWAP)",
-            "Um 16:30 (dt.): Kurs klar über/unter dem VWAP seit Eröffnung UND Kaufdruck-Näherung aus dem Volumen in dieselbe Richtung → mit dem Trend handeln. Stop am VWAP, Ziel 2R, Exit 22:00. Echte Orderbuchdaten sind nicht frei verfügbar.",
+            "S&P/Nasdaq Long um 21:50, Verkauf zur US-Eröffnung am nächsten Tag (15:30). Nur Mo–Do. Ein großer Teil der Aktienrendite entsteht über Nacht. Steht ein wichtiger Termin an, gibt es eine Warnung.",
         ),
         StratInfo(
             CAT_NEWS, "News pur (KI)",
-            "Sobald die KI für einen Markt ein starkes Sentiment (≥ 0,6) meldet, wird sofort in diese Richtung gehandelt – ohne Chart-Bestätigung. Stop 1,5× ATR, Ziel 3× ATR, Exit nach 4 h.",
+            "Sobald die KI für einen Markt ein starkes Sentiment (≥ 0,5) meldet, wird sofort in diese Richtung gehandelt – ohne Chart-Bestätigung. Stop 1,5× ATR, Ziel 3× ATR, Exit nach 4 h.",
         ),
     )
     val sweepCodes = setOf(CAT_PROPOSAL, CAT_SWEEP_ONLY)
-    val dayCodes = setOf(CAT_ORB, CAT_IM, CAT_ON, CAT_SB, CAT_VWAP, CAT_NEWS)
+    val dayCodes = all.map { it.code }.toSet() - sweepCodes
     fun name(code: String) = all.firstOrNull { it.code == code }?.name ?: code
+    fun short(code: String) = name(code).substringBefore(" (")
 }
 
 data class Signal(
@@ -122,9 +155,10 @@ data class Signal(
     val exitPrice: Double = 0.0,
     val exitTs: Long = 0,
     val pct: Double = 0.0,
-    val pnlEur: Double = 0.0,
     /** Geplanter Zeitausstieg (0 = Standard 24 h). */
     val exitAt: Long = 0,
+    /** Größte Gegenbewegung bis zum Ausstieg als Anteil vom Einstieg (−1 = unbekannt). Für die KO-Simulation. */
+    val mae: Double = -1.0,
 ) {
     val isOpen get() = status == "OPEN"
 
@@ -133,7 +167,7 @@ data class Signal(
         .put("entry", entry).put("sl", sl).put("tp", tp)
         .put("category", category).put("reason", reason).put("tags", JSONArray(tags))
         .put("status", status).put("exitPrice", exitPrice).put("exitTs", exitTs)
-        .put("pct", pct).put("pnlEur", pnlEur).put("exitAt", exitAt)
+        .put("pct", pct).put("exitAt", exitAt).put("mae", mae)
 
     companion object {
         fun fromJson(o: JSONObject) = Signal(
@@ -151,8 +185,8 @@ data class Signal(
             exitPrice = o.optDouble("exitPrice", 0.0),
             exitTs = o.optLong("exitTs", 0),
             pct = o.optDouble("pct", 0.0),
-            pnlEur = o.optDouble("pnlEur", 0.0),
             exitAt = o.optLong("exitAt", 0),
+            mae = o.optDouble("mae", -1.0),
         )
     }
 }
@@ -206,14 +240,17 @@ data class Earning(val symbol: String, val date: String, val hour: String, val e
 data class Settings(
     val finnhubKey: String = "",
     val claudeKey: String = "",
+    /** Einsatz pro Trade in €. */
     val stake: Double = 150.0,
-    val leverage: Double = 10.0,
+    /** Hebel-Profil: 0 = Auto (KO knapp hinter dem Stop), sonst fester Hebel. */
+    val lev: Int = 0,
+    val startCapital: Double = 250.0,
     val minScore: Double = 0.3,
     val disabled: Set<String> = emptySet(),
     val daytradePush: Boolean = true,
 ) {
     fun toJson(): JSONObject = JSONObject().put("finnhubKey", finnhubKey).put("claudeKey", claudeKey)
-        .put("stake", stake).put("leverage", leverage).put("minScore", minScore)
+        .put("stake", stake).put("lev", lev).put("startCapital", startCapital).put("minScore", minScore)
         .put("disabled", JSONArray(disabled.toList()))
         .put("daytradePush", daytradePush)
 
@@ -222,7 +259,8 @@ data class Settings(
             finnhubKey = o.optString("finnhubKey"),
             claudeKey = o.optString("claudeKey"),
             stake = o.optDouble("stake", 150.0),
-            leverage = o.optDouble("leverage", 10.0),
+            lev = o.optInt("lev", 0),
+            startCapital = o.optDouble("startCapital", 250.0),
             minScore = o.optDouble("minScore", 0.3),
             disabled = o.optJSONArray("disabled").strings().toSet(),
             daytradePush = o.optBoolean("daytradePush", true),
@@ -242,6 +280,10 @@ data class AppState(
     val sentimentTs: Long = 0,
     val calendarTs: Long = 0,
     val running: Boolean = false,
+    /** Lauf-Protokoll, neueste Zeile zuerst. */
+    val log: List<String> = emptyList(),
+    /** Bereits entschiedene Strategie-Slots (Strategie-Markt-Tag), damit nichts doppelt geprüft wird. */
+    val decided: Set<String> = emptySet(),
 )
 
 fun JSONArray?.strings(): List<String> {

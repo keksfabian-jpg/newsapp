@@ -90,6 +90,10 @@ import de.fabian.newstrader.Fmt
 import de.fabian.newstrader.KeyCheck
 import de.fabian.newstrader.Daytrade
 import de.fabian.newstrader.Export
+import de.fabian.newstrader.Alarms
+import de.fabian.newstrader.Position
+import de.fabian.newstrader.Settings as AppSettings
+import de.fabian.newstrader.Sizing
 import de.fabian.newstrader.Strategies
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
@@ -233,26 +237,70 @@ private fun RefreshButton(state: AppState) {
 
 // ---------------------------------------------------------------- Signale
 
-private fun hitRate(l: List<Signal>) = if (l.isEmpty()) "–" else "${l.count { it.pnlEur > 0 } * 100 / l.size} %"
+private typealias PosMap = Map<String, Position>
+
+@Composable
+private fun positions(state: AppState): PosMap = remember(state.signals, state.settings) {
+    state.signals.associate { it.id to Sizing.position(it, state.settings) }
+}
+
+private fun PosMap.pnl(s: Signal) = this[s.id]?.pnl ?: 0.0
+
+private fun hitRate(l: List<Signal>, pos: PosMap) =
+    if (l.isEmpty()) "–" else "${l.count { pos.pnl(it) > 0 } * 100 / l.size} %"
+
+@Composable
+private fun chipColors() = FilterChipDefaults.filterChipColors(
+    containerColor = C.Card,
+    labelColor = C.Muted,
+    selectedContainerColor = C.Accent.copy(alpha = 0.25f),
+    selectedLabelColor = C.Text,
+)
+
+/** Hebel-Profil: rechnet alle Paper-Trades sofort neu. */
+@Composable
+private fun LeverageBar(s: AppSettings) {
+    CardBox {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("Hebel-Profil", color = C.Muted, fontSize = 13.sp, modifier = Modifier.weight(1f))
+            Text("Einsatz ${Fmt.eurPlain(s.stake).removePrefix("+")} pro Trade", color = C.Muted, fontSize = 12.sp)
+        }
+        Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Sizing.levels.forEach { l ->
+                FilterChip(
+                    selected = s.lev == l,
+                    onClick = { Store.update { st -> st.copy(settings = st.settings.copy(lev = l)) } },
+                    label = { Text(Sizing.label(l)) },
+                    colors = chipColors(),
+                )
+            }
+        }
+        Text(
+            if (s.lev == 0) "Auto: höchster Hebel bis 300×, bei dem der KO noch knapp hinter dem Stop liegt."
+            else "Fester Hebel ${s.lev}×: KO, sobald der Kurs ${String.format(Locale.GERMANY, "%.2f", 100.0 / s.lev)} % gegen dich läuft – auch vor dem Stop.",
+            color = C.Muted, fontSize = 12.sp, lineHeight = 16.sp,
+        )
+    }
+}
 
 @Composable
 fun SignalsScreen(state: AppState) {
     var showAll by rememberSaveable { mutableStateOf(false) }
+    val pos = positions(state)
     val proposals = state.signals.filter { it.category == CAT_PROPOSAL }
     val closedP = proposals.filter { !it.isOpen }.sortedBy { it.exitTs }
     val closedS = state.signals.filter { it.category == CAT_SWEEP_ONLY && !it.isOpen }
-    val total = closedP.sumOf { it.pnlEur }
     val list = if (showAll) state.signals.filter { it.category in Strategies.sweepCodes } else proposals
 
     Screen {
         item {
             Title("NewsTrader", "Aktualisiert ${Fmt.ago(state.lastRun, nowSec())}") { RefreshButton(state) }
         }
-        item { PnlCard(total, closedP) }
+        item { PnlCard(closedP.map { pos.pnl(it) }, "Paper-Ergebnis der Vorschläge", state.settings) }
         item {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                StatTile("Vorschläge", hitRate(closedP), "${closedP.size} abgeschl.", Modifier.weight(1f))
-                StatTile("Nur Sweep", hitRate(closedS), "${closedS.size} abgeschl.", Modifier.weight(1f))
+                StatTile("Vorschläge", hitRate(closedP, pos), "${closedP.size} abgeschl.", Modifier.weight(1f))
+                StatTile("Nur Sweep", hitRate(closedS, pos), "${closedS.size} abgeschl.", Modifier.weight(1f))
                 StatTile("Offen", "${list.count { it.isOpen }}", "Paper-Trades", Modifier.weight(1f))
             }
         }
@@ -278,12 +326,7 @@ fun SignalsScreen(state: AppState) {
                     selected = showAll,
                     onClick = { showAll = !showAll },
                     label = { Text("inkl. Nur Sweep") },
-                    colors = FilterChipDefaults.filterChipColors(
-                        containerColor = C.Card,
-                        labelColor = C.Muted,
-                        selectedContainerColor = C.Accent.copy(alpha = 0.25f),
-                        selectedLabelColor = C.Text,
-                    ),
+                    colors = chipColors(),
                 )
             }
         }
@@ -295,12 +338,13 @@ fun SignalsScreen(state: AppState) {
                 )
             }
         }
-        items(list, key = { it.id }) { SignalCard(it) }
+        items(list.take(150), key = { it.id }) { sig -> pos[sig.id]?.let { SignalCard(sig, it) } }
     }
 }
 
 @Composable
-private fun PnlCard(total: Double, closed: List<Signal>, title: String = "Paper-Ergebnis der Vorschläge") {
+private fun PnlCard(pnls: List<Double>, title: String, s: AppSettings) {
+    val total = pnls.sum()
     CardBox {
         Text(title, color = C.Muted, fontSize = 13.sp)
         Text(
@@ -309,12 +353,16 @@ private fun PnlCard(total: Double, closed: List<Signal>, title: String = "Paper-
             fontSize = 32.sp,
             fontWeight = FontWeight.Bold,
         )
+        Text(
+            "Konto: ${Fmt.eurPlain(s.startCapital).removePrefix("+")} → ${Fmt.eurPlain(s.startCapital + total).removePrefix("+")} · Hebel ${Sizing.label(s.lev)}",
+            color = C.Muted, fontSize = 12.sp,
+        )
         Spacer(Modifier.height(10.dp))
-        val pts = remember(closed) {
+        val pts = remember(pnls) {
             val l = ArrayList<Double>()
             var acc = 0.0
             l.add(0.0)
-            closed.forEach { acc += it.pnlEur; l.add(acc) }
+            pnls.forEach { acc += it; l.add(acc) }
             l
         }
         if (pts.size < 2) {
@@ -363,14 +411,16 @@ private fun statusLabel(s: String) = when (s) {
     "SL" -> "SL erreicht"
     "ZEIT" -> "nach 24 h"
     "EOD" -> "Zeitausstieg"
+    "TRAIL" -> "VWAP-Ausstieg"
     else -> s
 }
 
 @Composable
-private fun SignalCard(s: Signal) {
+private fun SignalCard(s: Signal, p: Position) {
     var open by remember { mutableStateOf(false) }
     val dirColor = if (s.dir == 1) C.Green else C.Red
     val highlight = s.isOpen && (s.category == CAT_PROPOSAL || s.category in Strategies.dayCodes)
+    val warn = s.tags.filter { it.startsWith("⚠") }
     val shape = RoundedCornerShape(16.dp)
     Column(
         Modifier.fillMaxWidth().clip(shape).background(C.Card)
@@ -379,27 +429,35 @@ private fun SignalCard(s: Signal) {
             .padding(14.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(assetName(s.assetId), color = C.Text, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+            Text(
+                assetName(s.assetId), color = C.Text, fontSize = 17.sp, fontWeight = FontWeight.Bold,
+                maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false),
+            )
             Spacer(Modifier.width(8.dp))
             Chip(if (s.dir == 1) "LONG" else "SHORT", dirColor)
             if (s.category == CAT_SWEEP_ONLY) {
                 Spacer(Modifier.width(6.dp))
                 Chip("NUR SWEEP", C.Muted)
             }
+            if (p.ko) {
+                Spacer(Modifier.width(6.dp))
+                Chip("KO", C.Red)
+            }
             Spacer(Modifier.weight(1f))
             if (s.isOpen) {
                 Text("offen", color = C.AccentSoft, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
             } else {
                 Text(
-                    Fmt.eur(s.pnlEur),
-                    color = if (s.pnlEur >= 0) C.Green else C.Red,
+                    Fmt.eur(p.pnl),
+                    color = if (p.pnl >= 0) C.Green else C.Red,
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Bold,
                 )
             }
         }
-        val strat = if (s.category in Strategies.dayCodes) "${Strategies.name(s.category)} · " else ""
-        val sub = strat + Fmt.dateTime(s.ts) + if (!s.isOpen) " · ${statusLabel(s.status)} · ${Fmt.pct(s.pct)}" else ""
+        val strat = if (s.category in Strategies.dayCodes) "${Strategies.short(s.category)} · " else ""
+        val sub = strat + Fmt.dateTime(s.ts) +
+            if (!s.isOpen) " · ${statusLabel(s.status)} · ${Fmt.r(p.r)} · ${Fmt.pct(s.pct)}" else ""
         Text(sub, color = C.Muted, fontSize = 12.sp)
         Spacer(Modifier.height(10.dp))
         Row(Modifier.fillMaxWidth()) {
@@ -414,13 +472,33 @@ private fun SignalCard(s: Signal) {
                 }
             }
         }
-        if (s.tags.isNotEmpty()) {
+        Spacer(Modifier.height(8.dp))
+        Row(Modifier.fillMaxWidth()) {
+            Column(Modifier.weight(1f)) {
+                Text("Hebel", color = C.Muted, fontSize = 11.sp)
+                Text("${p.lev.toInt()}×", color = C.Text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            }
+            Column(Modifier.weight(1f)) {
+                Text("Einsatz", color = C.Muted, fontSize = 11.sp)
+                Text(Fmt.eurPlain(p.stake).removePrefix("+"), color = C.Text, fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            }
+            Level("KO-Schwelle", p.koPrice, C.Amber, Modifier.weight(1f))
+        }
+        warn.forEach {
+            Text(it, color = C.Amber, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.padding(top = 8.dp))
+        }
+        val tags = s.tags.filter { !it.startsWith("⚠") }
+        if (tags.isNotEmpty()) {
             Spacer(Modifier.height(8.dp))
-            Text(s.tags.joinToString(" · "), color = C.AccentSoft, fontSize = 12.sp)
+            Text(tags.joinToString(" · "), color = C.AccentSoft, fontSize = 12.sp)
         }
         if (open) {
             Spacer(Modifier.height(8.dp))
             Text(s.reason, color = C.Text.copy(alpha = 0.85f), fontSize = 13.sp, lineHeight = 18.sp)
+            Text(
+                "Angenommene Kosten: ${Fmt.eur(-p.cost)} (Spread + 2 € Gebühren)",
+                color = C.Muted, fontSize = 12.sp, modifier = Modifier.padding(top = 6.dp),
+            )
         } else {
             Text("Tippen für Begründung", color = C.Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp))
         }
@@ -435,7 +513,7 @@ private fun Level(label: String, v: Double, color: Color, modifier: Modifier) {
     }
 }
 
-// ---------------------------------------------------------------- Daytrade
+// ---------------------------------------------------------------- Strategien
 
 @Composable
 fun DaytradeScreen(state: AppState) {
@@ -443,32 +521,29 @@ fun DaytradeScreen(state: AppState) {
     val now = nowSec()
     var filter by rememberSaveable { mutableStateOf("ALLE") }
     var showInfo by rememberSaveable { mutableStateOf(false) }
-    val dayTrades = state.signals.filter { it.category in Strategies.dayCodes }
-    val shown = if (filter == "ALLE") dayTrades else dayTrades.filter { it.category == filter }
+    val pos = positions(state)
+    val shown = if (filter == "ALLE") state.signals else state.signals.filter { it.category == filter }
     val closedShown = shown.filter { !it.isOpen }.sortedBy { it.exitTs }
 
     Screen {
         item { Title("Strategien", "Paper-Vergleich · jede Position max. 24 h") { RefreshButton(state) } }
-        item { ComparisonCard(state.signals) { filter = if (it in Strategies.dayCodes) it else "ALLE" } }
+        item { LeverageBar(state.settings) }
+        item { ComparisonCard(state.signals, pos) { filter = if (filter == it) "ALLE" else it } }
         item {
             PnlCard(
-                closedShown.sumOf { it.pnlEur }, closedShown,
-                if (filter == "ALLE") "Paper-Ergebnis aller Daytrade-Strategien" else "Paper-Ergebnis: ${Strategies.name(filter)}",
+                closedShown.map { pos.pnl(it) },
+                if (filter == "ALLE") "Paper-Ergebnis aller Strategien" else "Paper-Ergebnis: ${Strategies.short(filter)}",
+                state.settings,
             )
         }
         item {
             Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                (listOf("ALLE") + Strategies.all.map { it.code }.filter { it in Strategies.dayCodes }).forEach { code ->
+                (listOf("ALLE") + Strategies.all.map { it.code }).forEach { code ->
                     FilterChip(
                         selected = filter == code,
                         onClick = { filter = code },
-                        label = { Text(if (code == "ALLE") "Alle" else Strategies.name(code)) },
-                        colors = FilterChipDefaults.filterChipColors(
-                            containerColor = C.Card,
-                            labelColor = C.Muted,
-                            selectedContainerColor = C.Accent.copy(alpha = 0.25f),
-                            selectedLabelColor = C.Text,
-                        ),
+                        label = { Text(if (code == "ALLE") "Alle" else Strategies.short(code)) },
+                        colors = chipColors(),
                     )
                 }
             }
@@ -483,7 +558,7 @@ fun DaytradeScreen(state: AppState) {
                     }
                 }
                 Text(
-                    "Zeitfenster (dt. Zeit): ORB 9:05/15:35 · Silver Bullet 16–17 · VWAP 16:30 · Intraday-Momentum 21:30 · Overnight 21:55 · News pur jederzeit",
+                    "Kurse kommen bei Futures 10 min, beim DAX 15 min verzögert. Die Einstiege werden trotzdem exakt nach Regel berechnet, nur der Push kommt entsprechend später.",
                     color = C.Muted, fontSize = 12.sp, lineHeight = 17.sp, modifier = Modifier.padding(top = 6.dp),
                 )
             }
@@ -492,10 +567,10 @@ fun DaytradeScreen(state: AppState) {
         if (shown.isEmpty()) {
             item { Text("Noch keine Trades für diese Auswahl.", color = C.Muted, fontSize = 14.sp) }
         }
-        items(shown.take(150), key = { it.id }) { SignalCard(it) }
+        items(shown.take(150), key = { it.id }) { sig -> pos[sig.id]?.let { SignalCard(sig, it) } }
         item {
             OutlinedButton(
-                onClick = { Export.share(ctx, state.signals) },
+                onClick = { Export.share(ctx, state) },
                 modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
                 shape = RoundedCornerShape(14.dp),
             ) { Text("Alle Trades als CSV teilen (${state.signals.size})", color = C.AccentSoft) }
@@ -520,24 +595,34 @@ fun DaytradeScreen(state: AppState) {
     }
 }
 
+private class StratRow(
+    val code: String, val name: String, val closed: Int, val open: Int,
+    val hit: String, val pnl: Double, val avgR: Double, val kos: Int,
+)
+
 @Composable
-private fun ComparisonCard(signals: List<Signal>, onPick: (String) -> Unit) {
-    data class Row3(val code: String, val name: String, val closed: Int, val open: Int, val hit: String, val pnl: Double, val avg: Double)
-    val rows = Strategies.all.map { info ->
-        val mine = signals.filter { it.category == info.code }
-        val closed = mine.filter { !it.isOpen }
-        val pnl = closed.sumOf { it.pnlEur }
-        Row3(info.code, info.name, closed.size, mine.count { it.isOpen }, hitRate(closed), pnl, if (closed.isEmpty()) 0.0 else pnl / closed.size)
-    }.sortedWith(compareByDescending<Row3> { it.closed > 0 }.thenByDescending { it.pnl })
+private fun ComparisonCard(signals: List<Signal>, pos: PosMap, onPick: (String) -> Unit) {
+    val rows = remember(signals, pos) {
+        Strategies.all.map { info ->
+            val mine = signals.filter { it.category == info.code }
+            val closed = mine.filter { !it.isOpen }
+            val ps = closed.mapNotNull { pos[it.id] }
+            StratRow(
+                info.code, Strategies.short(info.code), closed.size, mine.count { it.isOpen },
+                hitRate(closed, pos), ps.sumOf { it.pnl },
+                if (ps.isEmpty()) 0.0 else ps.sumOf { it.r } / ps.size, ps.count { it.ko },
+            )
+        }.sortedWith(compareByDescending<StratRow> { it.closed > 0 }.thenByDescending { it.pnl })
+    }
 
     CardBox {
         Text("Vergleich aller Strategien", color = C.Muted, fontSize = 13.sp)
         Spacer(Modifier.height(8.dp))
         Row {
-            Text("Strategie", color = C.Muted, fontSize = 11.sp, modifier = Modifier.weight(2.2f))
+            Text("Strategie", color = C.Muted, fontSize = 11.sp, modifier = Modifier.weight(2.3f))
             Text("Trades", color = C.Muted, fontSize = 11.sp, modifier = Modifier.weight(0.9f))
             Text("Treffer", color = C.Muted, fontSize = 11.sp, modifier = Modifier.weight(0.9f))
-            Text("Ø/Trade", color = C.Muted, fontSize = 11.sp, modifier = Modifier.weight(1.1f))
+            Text("Ø R", color = C.Muted, fontSize = 11.sp, modifier = Modifier.weight(0.9f))
             Text("Summe", color = C.Muted, fontSize = 11.sp, modifier = Modifier.weight(1.2f))
         }
         rows.forEach { r ->
@@ -550,16 +635,20 @@ private fun ComparisonCard(signals: List<Signal>, onPick: (String) -> Unit) {
                 Modifier.fillMaxWidth().clickable { onPick(r.code) }.padding(vertical = 7.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(r.name, color = C.Text, fontSize = 13.sp, modifier = Modifier.weight(2.2f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(r.name, color = C.Text, fontSize = 13.sp, modifier = Modifier.weight(2.3f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(if (r.open > 0) "${r.closed}+${r.open}" else "${r.closed}", color = C.Text, fontSize = 13.sp, modifier = Modifier.weight(0.9f))
                 Text(r.hit, color = C.Text, fontSize = 13.sp, modifier = Modifier.weight(0.9f))
-                Text(if (r.closed == 0) "–" else Fmt.eurPlain(r.avg), color = pnlColor, fontSize = 13.sp, modifier = Modifier.weight(1.1f))
-                Text(if (r.closed == 0) "–" else Fmt.eurPlain(r.pnl), color = pnlColor, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.weight(1.2f))
+                Text(if (r.closed == 0) "–" else Fmt.r(r.avgR), color = C.Text, fontSize = 13.sp, modifier = Modifier.weight(0.9f))
+                Text(
+                    if (r.closed == 0) "–" else Fmt.eurPlain(r.pnl) + if (r.kos > 0) " ·${r.kos}KO" else "",
+                    color = pnlColor, fontSize = 13.sp, fontWeight = FontWeight.SemiBold,
+                    maxLines = 1, modifier = Modifier.weight(1.2f),
+                )
             }
         }
         Text(
-            "Trades: abgeschlossen + offen. Tippen filtert die Liste. Aussagekräftig erst ab ca. 30 Trades je Strategie.",
-            color = C.Muted, fontSize = 11.sp, modifier = Modifier.padding(top = 6.dp),
+            "Trades: abgeschlossen + offen. Ø R = Ergebnis in Vielfachen des Stop-Risikos, unabhängig vom Hebel. Tippen filtert die Liste. Aussagekräftig erst ab ca. 30 Trades je Strategie.",
+            color = C.Muted, fontSize = 11.sp, lineHeight = 15.sp, modifier = Modifier.padding(top = 6.dp),
         )
     }
 }
@@ -745,7 +834,8 @@ fun SettingsScreen(state: AppState) {
     var finn by remember(s.finnhubKey) { mutableStateOf(s.finnhubKey) }
     var claude by remember(s.claudeKey) { mutableStateOf(s.claudeKey) }
     var stake by remember(s.stake) { mutableStateOf(trimNum(s.stake)) }
-    var lev by remember(s.leverage) { mutableStateOf(trimNum(s.leverage)) }
+    var capital by remember(s.startCapital) { mutableStateOf(trimNum(s.startCapital)) }
+    var showLog by rememberSaveable { mutableStateOf(false) }
     var minScore by remember(s.minScore) { mutableFloatStateOf(s.minScore.toFloat()) }
     var saved by remember { mutableStateOf(false) }
     var showKeys by remember { mutableStateOf(false) }
@@ -825,13 +915,14 @@ fun SettingsScreen(state: AppState) {
                     modifier = Modifier.weight(1f), colors = fieldColors(),
                 )
                 OutlinedTextField(
-                    value = lev, onValueChange = { lev = it; saved = false },
-                    label = { Text("Hebel") }, singleLine = true,
+                    value = capital, onValueChange = { capital = it; saved = false },
+                    label = { Text("Startkapital (€)") }, singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                     modifier = Modifier.weight(1f), colors = fieldColors(),
                 )
             }
         }
+        item { LeverageBar(s) }
         item {
             Text(
                 "Mindest-Sentiment für einen Vorschlag: ${String.format(Locale.GERMANY, "%.1f", minScore)}",
@@ -881,7 +972,7 @@ fun SettingsScreen(state: AppState) {
                                 finnhubKey = f,
                                 claudeKey = c,
                                 stake = stake.replace(',', '.').toDoubleOrNull() ?: it.settings.stake,
-                                leverage = lev.replace(',', '.').toDoubleOrNull() ?: it.settings.leverage,
+                                startCapital = capital.replace(',', '.').toDoubleOrNull() ?: it.settings.startCapital,
                                 minScore = minScore.toDouble(),
                             ),
                             sentimentTs = 0,
@@ -923,6 +1014,50 @@ fun SettingsScreen(state: AppState) {
                 }
             }
         }
+        item {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                SectionTitle("Protokoll")
+                Spacer(Modifier.weight(1f))
+                TextButton(onClick = { showLog = !showLog }) {
+                    Text(if (showLog) "ausblenden" else "anzeigen", color = C.AccentSoft)
+                }
+            }
+            Text(
+                if (Alarms.exactAllowed(ctx)) "Exakte Wecker aktiv: Die App prüft pünktlich zu den Strategie-Zeiten."
+                else "Exakte Wecker sind nicht erlaubt – Prüfungen können sich verzögern. Die Ergebnisse stimmen trotzdem, nur der Push kommt später.",
+                color = C.Muted, fontSize = 12.sp,
+            )
+        }
+        if (showLog) {
+            item {
+                CardBox {
+                    if (state.log.isEmpty()) Text("Noch keine Läufe protokolliert.", color = C.Muted, fontSize = 13.sp)
+                    state.log.take(80).forEach {
+                        Text(
+                            it, fontSize = 12.sp, lineHeight = 16.sp,
+                            color = when {
+                                it.trimStart().startsWith("✓") -> C.Green
+                                it.trimStart().startsWith("!") -> C.Amber
+                                it.startsWith(" ") -> C.Text.copy(alpha = 0.8f)
+                                else -> C.Muted
+                            },
+                        )
+                    }
+                }
+            }
+        }
+        item { SectionTitle("So wird gerechnet") }
+        item {
+            CardBox {
+                Text(
+                    "Jeder Trade wird wie ein KO-Schein gerechnet: Einsatz × Hebel × Kursbewegung, minus Spread und 2 € Gebühren. Mehr als der Einsatz kann nicht verloren gehen.\n\n" +
+                        "KO: Läuft der Kurs um 1/Hebel gegen die Position (bei 300× sind das 0,33 %), ist der Einsatz weg – auch wenn der Stop weiter entfernt liegt.\n\n" +
+                        "Spread ist eine Annahme: 0,01 % bei Forex und großen Indizes, 0,02 % Gold, 0,03 % Asien-Indizes, 0,04 % Öl, 0,05 % Aktien und Silber. Er wächst mit dem Hebel: Bei 300× kosten 0,01 % schon 3 % des Einsatzes.\n\n" +
+                        "Das Hebel-Profil lässt sich jederzeit umschalten, alle Trades werden dann neu berechnet.",
+                    color = C.Text, fontSize = 13.sp, lineHeight = 19.sp,
+                )
+            }
+        }
         item { SectionTitle("So entstehen Vorschläge") }
         item {
             CardBox {
@@ -931,8 +1066,7 @@ fun SettingsScreen(state: AppState) {
                         "2. Sweep: Eine 15-min-Kerze sticht über/unter die Range und schließt wieder innerhalb.\n" +
                         "3. Vorschlag nur, wenn das KI-Sentiment aus den News in dieselbe Richtung zeigt und kein wichtiger Termin in den nächsten 30 min ansteht.\n" +
                         "4. Stop hinter dem Sweep-Extrem, Ziel 2R. Jeder Vorschlag wird automatisch als Paper-Trade ausgewertet und nach spätestens 24 h geschlossen.\n" +
-                        "5. „Nur Sweep“ protokolliert alle Sweeps ohne News-Bestätigung – so siehst du, ob die News-Bestätigung wirklich etwas bringt.\n\n" +
-                        "P&L: Einsatz × Hebel × Kursbewegung − 2 € Gebühren, Verlust maximal der Einsatz.",
+                        "5. „Nur Sweep“ protokolliert alle Sweeps ohne News-Bestätigung – so siehst du, ob die News-Bestätigung wirklich etwas bringt.",
                     color = C.Text, fontSize = 13.sp, lineHeight = 19.sp,
                 )
             }

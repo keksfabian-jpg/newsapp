@@ -11,10 +11,12 @@ object Sources {
     fun candles(a: Asset): List<Candle> = candles(a.yahoo, "15m")
 
     fun candles(yahoo: String, interval: String): List<Candle> {
+        val step = if (interval == "15m") 900L else 300L
         val sym = URLEncoder.encode(yahoo, "UTF-8")
         val txt = Net.get("https://query1.finance.yahoo.com/v8/finance/chart/$sym?interval=$interval&range=5d")
         val result = JSONObject(txt).getJSONObject("chart").optJSONArray("result") ?: return emptyList()
         val r = result.getJSONObject(0)
+        val marketTime = r.optJSONObject("meta")?.optLong("regularMarketTime", 0) ?: 0
         val ts = r.optJSONArray("timestamp") ?: return emptyList()
         val q = r.getJSONObject("indicators").getJSONArray("quote").getJSONObject(0)
         val o = q.getJSONArray("open")
@@ -28,7 +30,33 @@ object Sources {
             val vol = if (v == null || v.isNull(i)) 0.0 else v.optDouble(i, 0.0)
             out.add(Candle(ts.getLong(i), o.getDouble(i), h.getDouble(i), l.getDouble(i), c.getDouble(i), vol))
         }
-        return out
+        return normalize(out, step, marketTime)
+    }
+
+    /**
+     * Die Quelle hängt eine „Live-Zeile“ mit krummem Zeitstempel an (kein echter Balken) und liefert
+     * die laufende Kerze unfertig. Live-Zeile in die laufende Kerze einrechnen, unfertige Kerzen markieren.
+     */
+    fun normalize(raw: List<Candle>, step: Long, marketTime: Long): List<Candle> {
+        val out = ArrayList<Candle>(raw.size)
+        var dataTime = marketTime
+        for (c in raw) {
+            if (c.ts % step != 0L) {
+                dataTime = maxOf(dataTime, c.ts)
+                val aligned = c.ts - c.ts % step
+                val last = out.lastOrNull()
+                if (last != null && last.ts == aligned) {
+                    out[out.size - 1] = last.copy(h = maxOf(last.h, c.h), l = minOf(last.l, c.l), c = c.c)
+                } else if (last == null || last.ts < aligned) {
+                    out.add(c.copy(ts = aligned))
+                }
+                continue
+            }
+            if (out.isNotEmpty() && out.last().ts >= c.ts) continue
+            out.add(c)
+        }
+        if (dataTime <= 0) return out
+        return out.map { if (it.ts + step > dataTime) it.copy(partial = true) else it }
     }
 
     fun calendar(): List<CalEvent> {

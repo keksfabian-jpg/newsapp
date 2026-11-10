@@ -25,21 +25,30 @@ object Notify {
 
     fun signal(ctx: Context, s: Signal, daytrade: Boolean = false) {
         val side = if (s.dir == 1) "LONG" else "SHORT"
-        val prefix = if (daytrade) "${Strategies.name(s.category)}: " else ""
-        val title = "$prefix$side ${assetName(s.assetId)} @ ${Fmt.price(s.entry)}"
-        val tp = if (s.tp > 0) " · TP ${Fmt.price(s.tp)}" else " · Zeitausstieg ${Fmt.time(s.exitAt)}"
-        val text = "SL ${Fmt.price(s.sl)}$tp\n${s.reason}"
+        val prefix = if (daytrade) "${Strategies.short(s.category)}: " else ""
+        val warn = if (s.tags.any { it.startsWith("⚠") }) "⚠ " else ""
+        val title = "$warn$prefix$side ${assetName(s.assetId)} @ ${Fmt.price(s.entry)}"
+        val pos = Sizing.position(s, Store.state.value.settings)
+        val tp = if (s.tp > 0) " · TP ${Fmt.price(s.tp)}" else " · Ausstieg ${Fmt.time(s.exitAt)}"
+        val text = "SL ${Fmt.price(s.sl)}$tp · Hebel ${pos.lev.toInt()}×\n${s.reason}"
         show(ctx, CH_SIGNAL, s.id.hashCode(), title, text)
     }
 
     fun result(ctx: Context, s: Signal) {
-        val how = when (s.status) {
-            "TP" -> "Take-Profit erreicht"
-            "SL" -> "Stop-Loss erreicht"
-            "EOD" -> "planmäßig zum Zeitausstieg geschlossen"
+        val pos = Sizing.position(s, Store.state.value.settings)
+        val how = when {
+            pos.ko -> "KO – Einsatz weg"
+            s.status == "TP" -> "Take-Profit erreicht"
+            s.status == "SL" -> "Stop-Loss erreicht"
+            s.status == "TRAIL" -> "VWAP-Ausstieg"
+            s.status == "EOD" -> "planmäßig zum Zeitausstieg geschlossen"
             else -> "nach 24 h geschlossen"
         }
-        show(ctx, CH_RESULT, s.id.hashCode() + 1, "${assetName(s.assetId)}: ${Fmt.eur(s.pnlEur)}", "$how (${Fmt.pct(s.pct)} im Basiswert)")
+        show(
+            ctx, CH_RESULT, s.id.hashCode() + 1,
+            "${assetName(s.assetId)}: ${Fmt.eur(pos.pnl)}",
+            "$how · ${Fmt.r(pos.r)} · ${Fmt.pct(s.pct)} im Basiswert · Hebel ${pos.lev.toInt()}×",
+        )
     }
 
     @SuppressLint("MissingPermission")

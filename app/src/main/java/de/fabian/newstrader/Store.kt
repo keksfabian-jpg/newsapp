@@ -50,6 +50,8 @@ object Store {
             lastError = p.getString("lastError", "") ?: "",
             sentimentTs = p.getLong("sentimentTs", 0),
             calendarTs = p.getLong("calendarTs", 0),
+            log = arr("log").strings(),
+            decided = arr("decided").strings().toSet(),
         )
     }
 
@@ -65,6 +67,8 @@ object Store {
             .putString("lastError", s.lastError)
             .putLong("sentimentTs", s.sentimentTs)
             .putLong("calendarTs", s.calendarTs)
+            .putString("log", JSONArray(s.log).toString())
+            .putString("decided", JSONArray(s.decided.toList()).toString())
             .apply()
     }
 }
